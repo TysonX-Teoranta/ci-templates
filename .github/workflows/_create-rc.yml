@@ -1,0 +1,72 @@
+# THIN CALLER (SPEC §2): all A1 logic lives in .github/scripts/ci/rc-cut.sh — version calc,
+# build/test, hygiene (audit-native-libs + detect-hacks + rc-gate scrub-verify), scrub-commit,
+# tag. This YAML only provides the runner, the workflow_call trigger and the checkout. A1 is
+# sh-driven and ZERO-human: there is NO confirm-phrase (AI fires workflow_dispatch; the actor
+# guard stays as authz). Live keeps TOTP downstream (G6/G8); staging side is fully auto.
+#
+# C178173122910335: when seed_snapshot=true, rc-cut.sh also seeds a clean throwaway DB to
+# seed_users users and pg_dumps a per-RC SEED SNAPSHOT into seed-snapshot/ BEFORE tagging
+# (seed failure blocks the RC). The snapshot is uploaded here as the seed-snapshot-<RC_TAG>
+# artifact for promote-to-staging to carry forward. The seed secrets are inherited from the
+# caller (secrets: inherit); on callers that do not seed they resolve empty and are unused.
+
+name: _create-rc
+
+on:
+  workflow_call:
+    inputs:
+      runner_label:  { required: true,  type: string }
+      solution:      { required: true,  type: string }
+      web_project:   { required: true,  type: string }   # native-lib audit publish target / seed app project
+      dev_branch:    { required: true,  type: string }   # e.g. kukuln-dev
+      domain:        { required: true,  type: string }   # used by rc-gate.sh
+      bump:          { required: true,  type: string }    # patch|minor|major
+      run_hygiene:   { required: false, type: boolean, default: true }
+      seed_snapshot: { required: false, type: boolean, default: false } # build per-RC seed snapshot
+      seed_users:    { required: false, type: string,  default: '10000' } # N sample users to seed
+
+permissions:
+  contents: write
+
+jobs:
+  create-rc:
+    name: A1 — cut RC (sh spine, zero human)
+    runs-on: [self-hosted, "${{ inputs.runner_label }}"]
+    if: github.ref == format('refs/heads/{0}', inputs.dev_branch)
+    steps:
+      - name: Verify authorized user
+        if: github.actor != 'lodgings-ie'
+        run: |
+          echo "::error::Only @lodgings-ie can trigger this (got: ${{ github.actor }})"
+          exit 1
+      - name: Checkout dev branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.dev_branch }}
+          fetch-depth: 0
+      - name: A1 — rc-cut (version + build/test + hygiene + scrub + seed snapshot + tag)
+        env:
+          # Isolate NuGet cache per-run so the shared /home/deploy/.nuget (mutated by the
+          # serverland-janitor + concurrent runner/MULE builds) can't be wiped mid-build —
+          # root cause of intermittent MSB3030 missing-package RC-cut fails (C178220508114290).
+          NUGET_PACKAGES:       ${{ runner.temp }}/nuget-${{ github.run_id }}
+          SOLUTION:             ${{ inputs.solution }}
+          WEB_PROJECT:          ${{ inputs.web_project }}
+          DEV_BRANCH:           ${{ inputs.dev_branch }}
+          DOMAIN:               ${{ inputs.domain }}
+          BUMP:                 ${{ inputs.bump }}
+          RUN_HYGIENE:          ${{ inputs.run_hygiene }}
+          SEED_SNAPSHOT:        ${{ inputs.seed_snapshot }}
+          SEED_N:               ${{ inputs.seed_users }}
+          PG_ADMIN_CONN:        ${{ secrets.RC_SEED_PG_ADMIN_CONN }}
+          SEED_SAMPLE_PASSWORD: ${{ secrets.RC_SEED_SAMPLE_PASSWORD }}
+          SEED_ADMIN_PASSWORD:  ${{ secrets.RC_SEED_ADMIN_PASSWORD }}
+        run: bash .github/scripts/ci/rc-cut.sh
+      - name: Upload SEED SNAPSHOT artifact
+        if: inputs.seed_snapshot
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: seed-snapshot-${{ env.RC_TAG }}
+          path: seed-snapshot/
+          retention-days: 14
+          if-no-files-found: error

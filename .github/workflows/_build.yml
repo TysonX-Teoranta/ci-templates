@@ -1,0 +1,141 @@
+# Reusable build+test+vuln-scan template (workflow_call). Generalised from lodgers ci.yml.
+#
+# Notes on generalisation:
+#  - lodgers ci.yml has heavy OOM/flock machinery tuned for the 7.5 GiB dev box and the
+#    multi-project LodgersSite solution. That machinery is lodgers-specific. It is kept here
+#    behind a `low_mem` input (default false) so kukuln/tysonx — which are far smaller — build
+#    plainly, while lodgers callers can switch it on to preserve today's exact behaviour.
+#  - `validate_env: false` skips the lodgers-only ASPNETCORE_ENVIRONMENT + NLog minlevel
+#    checks (those reference LodgersSite/nlog.config paths that other domains don't have).
+#  - `test: false` makes this a BUILD-ONLY CI (used by kukuln/tysonx to mark a cell "built"
+#    without a test suite or DB).
+
+name: _build
+
+on:
+  workflow_call:
+    inputs:
+      runner_label:   { required: true,  type: string }   # e.g. tysonx-dev
+      solution:       { required: true,  type: string }   # e.g. lodgers.sln | Kukuln.slnx | Tysonx.sln
+      domain:         { required: true,  type: string }   # lodgers | kukuln | tysonx
+      test:           { required: false, type: boolean, default: true }
+      validate_env:   { required: false, type: boolean, default: false }
+      env_file:       { required: false, type: string,  default: '' }   # /etc/lodgers/lodgers-dev.env
+      nlog_config:    { required: false, type: string,  default: '' }   # LodgersSite/nlog.config
+      low_mem:        { required: false, type: boolean, default: false } # lodgers OOM machinery
+      test_filter:    { required: false, type: string,  default: '' }    # e.g. Category!=E2E&...
+    secrets:
+      POSTGRES_CONNECTION_STRING: { required: false }
+      CLOUDFLARE_ACCOUNT_ID:      { required: false }
+      CLOUDFLARE_API_TOKEN:       { required: false }
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: [self-hosted, "${{ inputs.runner_label }}"]
+    timeout-minutes: 50
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Restore dependencies
+        timeout-minutes: 5
+        env:
+          MSBUILDDISABLENODEREUSE: "1"
+          DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+        run: dotnet restore "${{ inputs.solution }}"
+
+      - name: Validate dev environment config
+        if: inputs.validate_env
+        run: |
+          if grep -q "ASPNETCORE_ENVIRONMENT=Production" "${{ inputs.env_file }}" 2>/dev/null; then
+            echo "::error::ASPNETCORE_ENVIRONMENT=Production found in ${{ inputs.env_file }} — refusing to build in Production mode on dev"
+            exit 1
+          fi
+          if [ -n "${{ inputs.nlog_config }}" ]; then
+            MINLEVEL=$(grep -E 'name="\*".*writeTo="fullLog"' "${{ inputs.nlog_config }}" \
+              | grep -oE 'minlevel="[^"]+"' | cut -d'"' -f2 | head -1)
+            if [[ "$MINLEVEL" == "Trace" || "$MINLEVEL" == "Debug" ]]; then
+              echo "✓ NLog fullLog minlevel is $MINLEVEL"
+            else
+              echo "::error::nlog fullLog catchall minlevel is '${MINLEVEL:-not found}' — dev requires Debug or lower"
+              exit 1
+            fi
+          fi
+
+      # --- lodgers low-memory path: preserves today's exact OOM/flock behaviour ---
+      - name: Build (low-mem, sequential per-project)
+        if: inputs.low_mem
+        timeout-minutes: 40
+        env:
+          MSBUILDDISABLENODEREUSE: "1"
+          DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+          DOTNET_GCConserveMemory: "9"
+        run: |
+          # See lodgers ci.yml CI-OOM-FIX-V15 for rationale. Caller (lodgers) is responsible
+          # for the per-project list via a domain-specific build script if it diverges from
+          # `dotnet build <solution>`. Default here builds the whole solution with a 1GiB cap.
+          touch .CI-BUILDING || true
+          pkill -TERM -f "VBCSCompiler" 2>/dev/null || true; sleep 3; pkill -KILL -f "VBCSCompiler" 2>/dev/null || true
+          exec 9>.build-lock
+          flock -w 600 9 || { echo "::error::Build lock timeout"; exit 1; }
+          DOTNET_GCHeapHardLimit=1073741824 dotnet build "${{ inputs.solution }}" --no-restore --configuration Release -m:1 /nodeReuse:false
+
+      # --- standard path: plain build (kukuln / tysonx) ---
+      - name: Build
+        if: ${{ !inputs.low_mem }}
+        timeout-minutes: 20
+        env:
+          MSBUILDDISABLENODEREUSE: "1"
+          DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+        run: dotnet build "${{ inputs.solution }}" --no-restore --configuration Release
+
+      - name: Check for vulnerable packages
+        run: |
+          OUTPUT=$(dotnet list "${{ inputs.solution }}" package --vulnerable 2>&1)
+          echo "$OUTPUT"
+          if echo "$OUTPUT" | grep -qi "High\|Critical"; then
+            echo "::error::High/Critical vulnerable NuGet packages detected"
+            exit 1
+          fi
+
+      - name: Set integration test connection string
+        if: inputs.test
+        env:
+          POSTGRES_CS_SECRET: ${{ secrets.POSTGRES_CONNECTION_STRING }}
+          CLOUDFLARE_ACCOUNT_ID_SECRET: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN_SECRET: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -n "$POSTGRES_CS_SECRET" ]; then
+            echo "POSTGRES_CONNECTION_STRING=$POSTGRES_CS_SECRET" >> "$GITHUB_ENV"
+          else
+            echo "::warning::No POSTGRES_CONNECTION_STRING — integration tests use Testcontainers"
+          fi
+          if [ -n "$CLOUDFLARE_ACCOUNT_ID_SECRET" ] && [ -n "$CLOUDFLARE_API_TOKEN_SECRET" ]; then
+            echo "::add-mask::$CLOUDFLARE_API_TOKEN_SECRET"
+            echo "Cloudflare__AccountId=$CLOUDFLARE_ACCOUNT_ID_SECRET" >> "$GITHUB_ENV"
+            echo "Cloudflare__ApiToken=$CLOUDFLARE_API_TOKEN_SECRET" >> "$GITHUB_ENV"
+          fi
+
+      - name: Run tests
+        if: inputs.test
+        timeout-minutes: 45
+        env:
+          DOTNET_GCHeapHardLimit: "3221225472"
+          DOTNET_GCConserveMemory: "9"
+        run: |
+          FILTER="${{ inputs.test_filter }}"
+          if [ "${{ inputs.low_mem }}" = "true" ]; then exec 9>.build-lock; flock -w 900 9 || { echo "::error::Test lock timeout"; exit 1; }; fi
+          if [ -n "$FILTER" ]; then
+            dotnet test "${{ inputs.solution }}" --no-restore --configuration Release --verbosity normal --filter "$FILTER" -- MSTest.Parallelize.Workers=1
+          else
+            dotnet test "${{ inputs.solution }}" --no-restore --configuration Release --verbosity normal
+          fi
+
+      - name: Restore agent availability
+        if: always() && inputs.low_mem
+        run: |
+          rm -f .CI-BUILDING || true
+          sudo -S -p "" systemctl start ${{ inputs.domain }}-dev < /home/deploy/.pass 2>/dev/null || true

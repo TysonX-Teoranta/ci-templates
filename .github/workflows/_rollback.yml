@@ -1,0 +1,181 @@
+# Reusable LIVE rollback template (workflow_call). Generalises lodgers rollback-live.yml.
+# Restores live from the most recent (or a named) pre-deploy rsync snapshot taken by _deploy.yml
+# (is_live path writes to <www_root>/snapshots/live/<timestamp>/). Live-only by design — TOTP-gated.
+
+name: _rollback
+
+on:
+  workflow_call:
+    inputs:
+      runner_label:   { required: true,  type: string }   # tysonx-dev
+      domain:         { required: true,  type: string }   # lodgers | kukuln | tysonx
+      branch:         { required: true,  type: string }   # <domain>-live
+      www_root:       { required: true,  type: string }   # /var/www/<domain>
+      service_unit:   { required: true,  type: string }   # <domain>-live
+      gh_environment: { required: true,  type: string }   # lodgers-live
+      confirm_phrase: { required: true,  type: string }   # ROLLBACK-LIVE
+    secrets:
+      DEPLOY_SSH_KEY:          { required: true }
+      DEPLOY_HOST:             { required: true }
+      DEPLOY_PORT:             { required: true }
+      DEPLOY_USER:             { required: true }
+      DEPLOY_APP_PORT:         { required: true }
+      DEPLOY_GATE_TOTP_SECRET: { required: true }
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.domain }}-live
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    name: Alert operator of live dispatch
+    runs-on: [self-hosted, "${{ inputs.runner_label }}"]
+    steps:
+      - name: Email operator the run link
+        env:
+          OPERATOR_EMAIL: ${{ vars.OPERATOR_DEPLOY_ALERT_EMAIL || 'crom@lodgers.ie' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WF_NAME: ${{ github.workflow }}
+          WF_REF: ${{ github.ref }}
+        run: |
+          SUBJECT="[${{ inputs.domain }} LIVE] ${WF_NAME} dispatched on ${WF_REF}"
+          BODY="A live ${WF_NAME} run (${WF_REF}) was dispatched and is awaiting the rollback gate. Review/monitor it here: ${RUN_URL}"
+          if printf 'To: %s\nSubject: %s\n\n%s\n' "$OPERATOR_EMAIL" "$SUBJECT" "$BODY" | /usr/sbin/sendmail -t; then
+            echo "Operator alert sent to ${OPERATOR_EMAIL}: ${RUN_URL}"
+          else
+            echo "::warning::Failed to send operator rollback alert via sendmail. Proceeding — gate still requires TOTP."
+          fi
+
+  gate:
+    name: Confirm rollback
+    runs-on: [self-hosted, "${{ inputs.runner_label }}"]
+    needs: notify
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Verify authorized user
+        if: github.actor != 'lodgings-ie'
+        run: |
+          echo "::error::Only @lodgings-ie can trigger this workflow (got: ${{ github.actor }})"
+          exit 1
+
+      - name: Verify branch
+        env:
+          GH_REF: ${{ github.ref }}
+        run: |
+          if [ "$GH_REF" != "refs/heads/${{ inputs.branch }}" ]; then
+            echo "::error::Live rollbacks must be triggered from ${{ inputs.branch }}. Current ref: $GH_REF"
+            exit 1
+          fi
+
+      - name: Verify confirmation input
+        env:
+          CONFIRM: ${{ github.event.inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "${{ inputs.confirm_phrase }}" ]; then
+            echo "::error::Confirmation input does not match. Type ${{ inputs.confirm_phrase }} to confirm."
+            exit 1
+          fi
+
+      - name: Check dispatch-to-pickup latency (fail closed if stale)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MAX_LATENCY=90
+          CREATED_AT=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" --jq '.created_at')
+          [ -n "$CREATED_AT" ] || { echo "::error::Could not read created_at for latency check."; exit 1; }
+          LATENCY=$(( $(date -u +%s) - $(date -u -d "$CREATED_AT" +%s) ))
+          echo "Dispatch-to-pickup latency: ${LATENCY}s (max ${MAX_LATENCY}s)."
+          if [ "$LATENCY" -gt "$MAX_LATENCY" ]; then
+            echo "::error::Pickup latency ${LATENCY}s exceeds ${MAX_LATENCY}s — re-dispatch with a FRESH TOTP code."
+            exit 1
+          fi
+
+      - name: Verify TOTP deployment gate
+        env:
+          CODE: ${{ github.event.inputs.verification_code }}
+          TOTP_SECRET: ${{ secrets.DEPLOY_GATE_TOTP_SECRET }}
+        run: |
+          MATCH=0
+          for OFFSET in "now" "30 seconds ago" "60 seconds ago" "30 seconds" "60 seconds"; do
+            EXPECTED=$(oathtool --totp --base32 --now="$OFFSET" "$TOTP_SECRET")
+            [ "$CODE" = "$EXPECTED" ] && { MATCH=1; break; }
+          done
+          [ "$MATCH" -eq 1 ] && echo "TOTP verification passed." || { echo "::error::TOTP code invalid or expired."; exit 1; }
+
+      - name: Deploy gate (server-side approval)
+        run: /home/deploy/scripts/${{ inputs.domain }}-deploy-gate.sh live
+
+  rollback:
+    name: Rollback ${{ inputs.domain }} (live)
+    runs-on: [self-hosted, "${{ inputs.runner_label }}"]
+    environment: ${{ inputs.gh_environment }}
+    needs: gate
+    if: github.ref == format('refs/heads/{0}', inputs.branch)
+    env:
+      HOST: ${{ secrets.DEPLOY_HOST }}
+      PORT: ${{ secrets.DEPLOY_PORT }}
+      USER: ${{ secrets.DEPLOY_USER }}
+      APP_PORT: ${{ secrets.DEPLOY_APP_PORT }}
+      ROOT: ${{ inputs.www_root }}
+      UNIT: ${{ inputs.service_unit }}
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "$PORT" "$HOST" >> ~/.ssh/known_hosts
+
+      - name: Check snapshot infrastructure and select target
+        run: |
+          REQ="${{ github.event.inputs.snapshot }}"
+          TARGET=$(ssh -i ~/.ssh/deploy_key -p "$PORT" "$USER@$HOST" bash -s -- "$REQ" "$ROOT" <<'SSHEOF'
+          set -euo pipefail
+          REQ="$1"; ROOT="$2"; SNAP_DIR="$ROOT/snapshots/live"
+          [ -d "$SNAP_DIR" ] || { echo "::error::Snapshot dir $SNAP_DIR not found — _deploy.yml must take a pre-deploy snapshot first." >&2; exit 1; }
+          COUNT=$(ls -1 "$SNAP_DIR" 2>/dev/null | wc -l)
+          [ "$COUNT" -gt 0 ] || { echo "::error::No snapshots in $SNAP_DIR — complete one live deploy first." >&2; exit 1; }
+          if [ -n "$REQ" ]; then
+            [ -d "$SNAP_DIR/$REQ" ] || { echo "::error::Requested snapshot '$REQ' not found." >&2; exit 1; }
+            echo "$REQ"
+          else
+            ls -1t "$SNAP_DIR" | head -1
+          fi
+          SSHEOF
+          )
+          echo "ROLLBACK_TARGET=$TARGET" >> $GITHUB_ENV
+          echo "RELEASE=$(date -u +%Y%m%d%H%M%S)" >> $GITHUB_ENV
+          echo "Rolling back to snapshot: $TARGET"
+
+      - name: Restore snapshot
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "$PORT" "$USER@$HOST" bash -s -- "$RELEASE" "$ROLLBACK_TARGET" "$ROOT" "$UNIT" <<'SSHEOF'
+          set -euo pipefail
+          RELEASE="$1"; SNAP="$2"; ROOT="$3"; UNIT="$4"
+          SNAP_DIR="$ROOT/snapshots/live"; RELEASE_DIR="$ROOT/releases/live/$RELEASE"
+          mkdir -p "$RELEASE_DIR"
+          rsync -az --delete "$SNAP_DIR/$SNAP/" "$RELEASE_DIR/"
+          ln -sfn "$RELEASE_DIR" "$ROOT/env/live"
+          sudo -n /bin/systemctl restart "$UNIT"
+          echo "Rollback complete: $SNAP -> $RELEASE_DIR"
+          SSHEOF
+
+      - name: Health check
+        run: |
+          sleep 8
+          ssh -i ~/.ssh/deploy_key -p "$PORT" "$USER@$HOST" \
+            "curl -sf -o /dev/null -w '%{http_code}' http://localhost:$APP_PORT/ | grep -qE '^(200|302)' && echo 'Health check passed' || (echo 'Health check FAILED'; exit 1)"
+
+      - name: Prune old releases (keep last 3)
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "$PORT" "$USER@$HOST" \
+            "ls -1t $ROOT/releases/live/ | tail -n +4 | xargs -I{} rm -rf $ROOT/releases/live/{} 2>/dev/null || true"
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

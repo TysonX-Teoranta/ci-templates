@@ -1,0 +1,98 @@
+# THIN CALLER (SPEC §2): all promotion logic lives in .github/scripts/ci/promote.sh.
+#   target=staging : A2 — checkout RC tag at dev HEAD, INGEST oracle, strip tests, verify build,
+#                    open promote/<rc> PR into <staging branch>.
+#   target=live    : A4 — diff <staging> vs <live>, INGEST oracle (live ruleset), open PR
+#                    <staging> -> <live>.
+# ZERO-human, NO confirm-phrase: A2/A4 are auto sh. Staging carries NO `environment:` gate (staging
+# is config/test only, no human). The staging->live human gate is G6 (TOTP) and lives in the
+# CALLER promote-to-live.yml as a pulse-runner job that `needs` must clear before this job runs.
+#
+# C178173122910335: on the staging target the per-RC SEED SNAPSHOT built by create-rc is carried
+# forward — promote.sh exports RC_TAG (GITHUB_ENV); the steps below download that RC's
+# seed-snapshot-<RC_TAG> artifact and re-publish it on THIS promote run so deploy-staging restores
+# from a single known promotion run. `actions: read` is needed to locate the artifact via the API.
+
+name: _promote
+
+on:
+  workflow_call:
+    inputs:
+      runner_label:    { required: true, type: string }
+      solution:        { required: true, type: string }
+      domain:          { required: true, type: string }
+      target:          { required: true, type: string }   # staging | live
+      dev_branch:      { required: true, type: string }
+      staging_branch:  { required: true, type: string }
+      live_branch:     { required: true, type: string }
+      run_strip_tests: { required: false, type: boolean, default: true }
+      domain_url:      { required: false, type: string, default: '' }
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  promote:
+    name: Promote (${{ inputs.target }} — sh spine, zero human)
+    runs-on: [self-hosted, "${{ inputs.runner_label }}"]
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Verify authorized user
+        if: github.actor != 'lodgings-ie'
+        run: |
+          echo "::error::Only @lodgings-ie can trigger this (got: ${{ github.actor }})"
+          exit 1
+      - name: Checkout dev (staging target)
+        if: inputs.target == 'staging'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { ref: '${{ inputs.dev_branch }}', fetch-depth: 0 }
+      - name: Checkout staging (live target)
+        if: inputs.target == 'live'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with: { ref: '${{ inputs.staging_branch }}', fetch-depth: 0 }
+      - name: Promote (A2 staging ingestion / A4 live ingestion oracle)
+        env:
+          SOLUTION:        ${{ inputs.solution }}
+          DOMAIN:          ${{ inputs.domain }}
+          DEV_BRANCH:      ${{ inputs.dev_branch }}
+          STAGING_BRANCH:  ${{ inputs.staging_branch }}
+          LIVE_BRANCH:     ${{ inputs.live_branch }}
+          DOMAIN_URL:      ${{ inputs.domain_url }}
+          RUN_STRIP_TESTS: ${{ inputs.run_strip_tests }}
+        run: bash .github/scripts/ci/promote.sh ${{ inputs.target }}
+
+      # C178173122910335: carry the per-RC SEED SNAPSHOT forward (staging target only). promote.sh
+      # exported RC_TAG via GITHUB_ENV; locate the create-rc run that built this RC's snapshot
+      # artifact, download it, and re-publish it on THIS promote run so deploy-staging can restore
+      # from a single known promotion run. No rebuild, no re-seed.
+      - name: Carry seed snapshot forward (download from RC run)
+        if: inputs.target == 'staging'
+        run: |
+          ARTIFACT_NAME="seed-snapshot-${RC_TAG}"
+          RUN_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${ARTIFACT_NAME}&per_page=1" \
+            -q '.artifacts[0].workflow_run.id' 2>/dev/null)
+          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+            echo "::error::No seed snapshot artifact '$ARTIFACT_NAME' found — run Create RC for $RC_TAG first."
+            exit 1
+          fi
+          echo "Found seed snapshot '$ARTIFACT_NAME' from create-rc run $RUN_ID."
+          rm -rf seed-snapshot && mkdir -p seed-snapshot
+          gh run download "$RUN_ID" -n "$ARTIFACT_NAME" -D seed-snapshot
+          test -f "seed-snapshot/${RC_TAG}.dump" || { echo "::error::snapshot dump missing after download"; exit 1; }
+          test -f "seed-snapshot/${RC_TAG}.manifest.json" || { echo "::error::snapshot manifest missing after download"; exit 1; }
+          {
+            echo "## Seed snapshot carried forward"
+            echo "- From create-rc run: \`$RUN_ID\`"
+            echo "- Dump: \`${RC_TAG}.dump\` ($(stat -c%s "seed-snapshot/${RC_TAG}.dump") bytes)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Re-publish seed snapshot on this promotion run
+        if: inputs.target == 'staging'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: seed-snapshot-${{ env.RC_TAG }}
+          path: seed-snapshot/
+          retention-days: 14
+          if-no-files-found: error

@@ -1,0 +1,345 @@
+# Reusable deploy template (workflow_call). Generalises lodgers deploy-staging.yml +
+# deploy-live.yml into one parametrised workflow.
+#
+# Behaviour switches (preserve today's lodgers behaviour exactly when set as lodgers sets them):
+#  - is_live:true   -> adds the deploy-live extras: operator email alert, TOTP gate,
+#                      dispatch-to-pickup latency fail-closed, pre-deploy rsync snapshot,
+#                      and a post-deploy git tag. Live also keeps the DB (no drop/recreate).
+#  - seed:true      -> lodgers-only: stop service, SEED_ON_DEPLOY flag, pg_dump backup,
+#                      drop+recreate DB, then wait for the DbSeeder "seeding completed" log.
+#                      kukuln/tysonx leave seed:false -> plain symlink+restart+health.
+#  - validate_env   -> the ASPNETCORE_ENVIRONMENT + NLog minlevel guard (lodgers paths).
+#
+# The runner is always the caller's CI runner (runner_label, e.g. tysonx-dev); deploy steps
+# SSH from there into the target box using the per-environment DEPLOY_* secrets.
+
+name: _deploy
+
+on:
+  workflow_call:
+    inputs:
+      env:            { required: true,  type: string }   # staging | live
+      runner_label:   { required: true,  type: string }   # tysonx-dev (CI/build+deploy origin)
+      domain:         { required: true,  type: string }   # lodgers | kukuln | tysonx
+      branch:         { required: true,  type: string }   # lodgers-dev | <domain>-staging ...
+      solution:       { required: true,  type: string }   # lodgers.sln | Kukuln.slnx | Tysonx.sln
+      web_project:    { required: true,  type: string }   # LodgersSite/LodgersSite.csproj
+      rid:            { required: false, type: string,  default: 'linux-x64' }
+      www_root:       { required: true,  type: string }   # /var/www/<domain>
+      service_unit:   { required: true,  type: string }   # <domain>-<env>
+      env_file:       { required: false, type: string,  default: '' }   # /etc/lodgers/<domain>-<env>.env
+      gh_environment: { required: true,  type: string }   # lodgers-staging | lodgers-live (required reviewers)
+      confirm_phrase: { required: true,  type: string }   # DEPLOY-STAGING | DEPLOY-LIVE
+      is_live:        { required: false, type: boolean, default: false }
+      seed:           { required: false, type: boolean, default: false }
+      user_secrets_id: { required: false, type: string, default: '' }   # aspnet-LodgersSite-… (pg_dump, seed only)
+      validate_env:   { required: false, type: boolean, default: false }
+      nlog_config:    { required: false, type: string,  default: '' }
+      health_path:    { required: false, type: string,  default: '/health' }
+      confirm:            { required: false, type: string,  default: '' }
+      verification_code:  { required: false, type: string,  default: '' }
+    secrets:
+      DEPLOY_SSH_KEY:          { required: true }
+      DEPLOY_HOST:             { required: true }
+      DEPLOY_PORT:             { required: true }
+      DEPLOY_USER:             { required: true }
+      DEPLOY_APP_PORT:         { required: true }
+      DEPLOY_GATE_TOTP_SECRET: { required: false }   # live only
+
+permissions:
+  contents: read
+
+# One in-flight deploy/rollback per env (callers should pass cancel-in-progress:false semantics
+# by naming the concurrency group on their side if they also expose rollback).
+concurrency:
+  group: deploy-${{ inputs.domain }}-${{ inputs.env }}
+  cancel-in-progress: false
+
+jobs:
+  # Live only: email the operator the moment a live deploy is dispatched (before the gate).
+  notify:
+    name: Alert operator of live dispatch
+    if: inputs.is_live
+    runs-on: [self-hosted, "${{ inputs.runner_label }}"]
+    steps:
+      - name: Email operator the run link
+        env:
+          OPERATOR_EMAIL: ${{ vars.OPERATOR_DEPLOY_ALERT_EMAIL || 'crom@lodgers.ie' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WF_NAME: ${{ github.workflow }}
+          WF_REF: ${{ github.ref }}
+        run: |
+          SUBJECT="[${{ inputs.domain }} LIVE] ${WF_NAME} dispatched on ${WF_REF}"
+          BODY="A live ${WF_NAME} run (${WF_REF}) was dispatched and is awaiting the deployment gate. Review/monitor it here: ${RUN_URL}"
+          if printf 'To: %s\nSubject: %s\n\n%s\n' "$OPERATOR_EMAIL" "$SUBJECT" "$BODY" | /usr/sbin/sendmail -t; then
+            echo "Operator alert sent to ${OPERATOR_EMAIL}: ${RUN_URL}"
+          else
+            echo "::warning::Failed to send operator deploy alert via sendmail. Proceeding — gate still requires TOTP."
+          fi
+
+  gate:
+    name: Confirm deployment
+    runs-on: [self-hosted, "${{ inputs.runner_label }}"]
+    # `needs` an optional job is fine: skipped `notify` does not block when is_live=false.
+    needs: [notify]
+    if: always() && (needs.notify.result == 'success' || needs.notify.result == 'skipped')
+    permissions:
+      contents: read
+      actions: read   # read this run's created_at for latency check (live)
+    steps:
+      - name: Verify authorized user
+        if: github.actor != 'lodgings-ie'
+        run: |
+          echo "::error::Only @lodgings-ie can trigger this workflow (got: ${{ github.actor }})"
+          exit 1
+
+      - name: Verify branch (live only)
+        if: inputs.is_live
+        env:
+          GH_REF: ${{ github.ref }}
+        run: |
+          if [ "$GH_REF" != "refs/heads/${{ inputs.branch }}" ]; then
+            echo "::error::Live deploys must be triggered from ${{ inputs.branch }}. Current ref: $GH_REF"
+            exit 1
+          fi
+          echo "Branch check passed: ${{ inputs.branch }}"
+
+      # Live keeps the belt-and-suspenders typed confirm (in addition to the G8 TOTP gate below).
+      # Staging is ZERO-human (SPEC §4): no confirm-phrase, no server-side approval token — the
+      # auto sh spine drives it. AI only fires the workflow_dispatch.
+      - name: Verify confirmation input (live only)
+        if: inputs.is_live
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "${{ inputs.confirm_phrase }}" ]; then
+            echo "::error::Confirmation input does not match. Type ${{ inputs.confirm_phrase }} to confirm."
+            exit 1
+          fi
+          echo "Confirmation accepted."
+
+  # LIVE ONLY: Crom's TOTP gate. Runs on the pulse runner (local to the gate scripts + poller,
+  # so no dev->pulse inbound). gate-wait sends a no-code SMS+email alert and blocks until the
+  # poller captures Crom's TOTP reply; exits 0 ONLY on approval. This is the required live control.
+  live_gate:
+    name: Live TOTP gate (Crom approval)
+    needs: gate
+    if: ${{ inputs.is_live && needs.gate.result == 'success' }}
+    runs-on: [self-hosted, tysonx-pulse]
+    steps:
+      - name: Await Crom TOTP approval
+        run: $HOME/tysonx-core/ops/cicd/gate-wait.sh ${{ inputs.domain }} ${{ inputs.env }} deploy
+
+  deploy:
+    name: Deploy ${{ inputs.domain }} (${{ inputs.env }})
+    runs-on: [self-hosted, "${{ inputs.runner_label }}"]
+    environment: ${{ inputs.gh_environment }}
+    needs: [gate, live_gate]
+    # live: requires live_gate success (Crom TOTP). staging: live_gate skipped -> allowed.
+    if: ${{ always() && needs.gate.result == 'success' && (needs.live_gate.result == 'success' || needs.live_gate.result == 'skipped') }}
+    env:
+      HOST: ${{ secrets.DEPLOY_HOST }}
+      PORT: ${{ secrets.DEPLOY_PORT }}
+      USER: ${{ secrets.DEPLOY_USER }}
+      APP_PORT: ${{ secrets.DEPLOY_APP_PORT }}
+      ROOT: ${{ inputs.www_root }}
+      UNIT: ${{ inputs.service_unit }}
+      ENVF: ${{ inputs.env_file }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.branch }}
+
+      - name: Restore dependencies
+        run: dotnet restore "${{ inputs.solution }}"
+
+      - name: Validate environment config
+        if: inputs.validate_env
+        run: |
+          if grep -q "ASPNETCORE_ENVIRONMENT=Production" "$ENVF" 2>/dev/null && [ "${{ inputs.env }}" != "live" ]; then
+            echo "::error::ASPNETCORE_ENVIRONMENT=Production found in $ENVF — refusing to deploy to ${{ inputs.env }}"
+            exit 1
+          fi
+          if [ -n "${{ inputs.nlog_config }}" ] && [ "${{ inputs.env }}" != "live" ]; then
+            MINLEVEL=$(grep -E 'name="\*".*writeTo="fullLog"' "${{ inputs.nlog_config }}" | grep -oE 'minlevel="[^"]+"' | cut -d'"' -f2 | head -1)
+            case "$MINLEVEL" in
+              Trace|Debug) echo "✓ NLog fullLog minlevel is $MINLEVEL" ;;
+              *) echo "::error::nlog fullLog minlevel '${MINLEVEL:-not found}' — ${{ inputs.env }} requires Debug or lower"; exit 1 ;;
+            esac
+          fi
+
+      - name: Publish (${{ inputs.rid }}, framework-dependent)
+        run: |
+          dotnet publish "${{ inputs.web_project }}" \
+            --configuration Release -r "${{ inputs.rid }}" \
+            --self-contained false  --output ./publish-out
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "$PORT" "$HOST" >> ~/.ssh/known_hosts
+
+
+      - name: Capture previous release for rollback
+        run: |
+          PREV=$(ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -p "$PORT" "$USER@$HOST" "readlink $ROOT/env/${{ inputs.env }} 2>/dev/null || true")
+          echo "PREV_RELEASE=${PREV}" >> $GITHUB_ENV
+          echo "Previous release: ${PREV:-none (first deploy)}"
+
+      - name: Create release directory
+        run: |
+          RELEASE=$(date -u +%Y%m%d%H%M%S)
+          echo "RELEASE=$RELEASE" >> $GITHUB_ENV
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -p "$PORT" "$USER@$HOST" "mkdir -p $ROOT/releases/${{ inputs.env }}/$RELEASE"
+
+      - name: Pre-deploy snapshot (live only)
+        if: inputs.is_live
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -p "$PORT" "$USER@$HOST" bash -s <<SSHEOF
+          set -euo pipefail
+          mkdir -p "$ROOT/snapshots/live"
+          CUR=\$(readlink "$ROOT/env/live" 2>/dev/null || true)
+          if [ -n "\$CUR" ] && [ -d "\$CUR" ]; then
+            SNAP="$ROOT/snapshots/live/$RELEASE"
+            mkdir -p "\$SNAP"
+            rsync -a "\$CUR/" "\$SNAP/"
+            ls -1t "$ROOT/snapshots/live" | tail -n +6 | xargs -I{} rm -rf "$ROOT/snapshots/live/{}" 2>/dev/null || true
+            echo "Snapshot taken: \$SNAP"
+          else
+            echo "No current live release to snapshot (first deploy)."
+          fi
+          SSHEOF
+
+      - name: Upload publish output
+        run: |
+          rsync -az --delete \
+            --exclude='appsettings.*.json' --exclude='logs/' --exclude='uploads/' \
+            --exclude='wwwroot/uploads/' --exclude='DataProtection-Keys/' \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -p $PORT" \
+            ./publish-out/ "$USER@$HOST:$ROOT/releases/${{ inputs.env }}/$RELEASE/"
+
+      - name: Prune win/osx runtimes from release
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -p "$PORT" "$USER@$HOST" \
+            "find $ROOT/releases/${{ inputs.env }}/$RELEASE -type d \( -name 'win-*' -o -name 'osx-*' -o -name 'win10-*' \) -exec rm -rf {} + 2>/dev/null || true"
+
+      - name: Normalize web permissions (755/644)
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -p "$PORT" "$USER@$HOST" \
+            "R=$ROOT/releases/${{ inputs.env }}/$RELEASE; find \"\$R\" -type d -exec chmod 755 {} + ; [ -d \"\$R/wwwroot\" ] && find \"\$R/wwwroot\" -type f -exec chmod 644 {} + ; find \"\$R\" -type f -exec chmod a+r {} + ; true"
+
+      # ---- lodgers-only seed/DB-rebuild block (seed:true) ----
+      - name: Stop service for DB rebuild (seed)
+        if: inputs.seed
+        run: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -p "$PORT" "$USER@$HOST" "sudo -n /bin/systemctl stop $UNIT 2>/dev/null || cat ~/.pass | sudo -S /bin/systemctl stop $UNIT || true"
+
+      - name: Enable seed-on-deploy flag (seed)
+        if: inputs.seed
+        run: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -p "$PORT" "$USER@$HOST" "grep -q SEED_ON_DEPLOY $ENVF 2>/dev/null || echo 'SEED_ON_DEPLOY=true' >> $ENVF"
+
+      - name: pg_dump pre-deploy backup (seed)
+        if: inputs.seed
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -p "$PORT" "$USER@$HOST" bash -s -- "$RELEASE" "${{ inputs.user_secrets_id }}" "${{ inputs.env }}" <<'REMOTE'
+          set -euo pipefail
+          RELEASE="$1"; SECRETS_ID="$2"; ENVN="$3"
+          SECRETS="/home/deploy/.microsoft/usersecrets/${SECRETS_ID}/secrets.json"
+          CONN_STR=$(python3 -c "import json;print(json.load(open('${SECRETS}')).get('ConnectionStrings:DefaultConnection',''))")
+          [ -n "$CONN_STR" ] || { echo "::error::Cannot read connection string for pg_dump"; exit 1; }
+          PG_HOST=$(echo "$CONN_STR" | grep -oiP '(?i)Host=\K[^;]+'); PG_DB=$(echo "$CONN_STR" | grep -oiP '(?i)Database=\K[^;]+')
+          PG_USER=$(echo "$CONN_STR" | grep -oiP '(?i)Username=\K[^;]+'); PG_PASS=$(echo "$CONN_STR" | grep -oiP '(?i)Password=\K[^;]+')
+          BACKUP="${ROOT:-/var/www/lodgers}/releases/${ENVN}/${RELEASE}/pre-deploy-$(date -u +%Y%m%dT%H%M%SZ).dump"
+          PGPASSWORD="$PG_PASS" pg_dump --host="$PG_HOST" --username="$PG_USER" --dbname="$PG_DB" --format=custom --file="$BACKUP"
+          echo "pg_dump completed: $BACKUP"
+          REMOTE
+
+      - name: Drop and recreate database (seed)
+        if: inputs.seed
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -p "$PORT" "$USER@$HOST" bash -s -- "$ENVF" "${{ inputs.user_secrets_id }}" <<'REMOTE'
+          set -euo pipefail
+          ENVF="$1"; SECRETS_ID="$2"; CONN_STR=""
+          [ -f "$ENVF" ] && CONN_STR=$(grep -oP '(?<=ConnectionStrings__DefaultConnection=).*' "$ENVF" 2>/dev/null | head -1 || true)
+          if [ -z "$CONN_STR" ]; then
+            SECRETS="/home/deploy/.microsoft/usersecrets/${SECRETS_ID}/secrets.json"
+            CONN_STR=$(python3 -c "import json;print(json.load(open('${SECRETS}')).get('ConnectionStrings:DefaultConnection',''))" 2>/dev/null || true)
+          fi
+          [ -n "$CONN_STR" ] || { echo "::error::Cannot resolve DB connection string"; exit 1; }
+          PG_HOST=$(echo "$CONN_STR" | grep -oiP '(?i)Host=\K[^;]+'); PG_DB=$(echo "$CONN_STR" | grep -oiP '(?i)Database=\K[^;]+')
+          PG_USER=$(echo "$CONN_STR" | grep -oiP '(?i)Username=\K[^;]+'); PG_PASS=$(echo "$CONN_STR" | grep -oiP '(?i)Password=\K[^;]+')
+          [ -n "$PG_DB" ] && [ -n "$PG_USER" ] || { echo "::error::Failed to parse DB credentials"; exit 1; }
+          echo "Dropping DB $PG_DB on ${PG_HOST:-localhost}"
+          PGPASSWORD="$PG_PASS" dropdb --host="${PG_HOST:-localhost}" --username="$PG_USER" --if-exists "$PG_DB"
+          PGPASSWORD="$PG_PASS" createdb --host="${PG_HOST:-localhost}" --username="$PG_USER" "$PG_DB"
+          echo "DB recreated. EF Core applies migrations on startup."
+          REMOTE
+
+      - name: Symlink new release and (re)start service
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -p "$PORT" "$USER@$HOST" "
+            ln -sfn $ROOT/releases/${{ inputs.env }}/$RELEASE $ROOT/env/${{ inputs.env }}
+            sudo -n /bin/systemctl restart $UNIT 2>/dev/null || sudo -n /bin/systemctl start $UNIT 2>/dev/null || cat ~/.pass | sudo -S /bin/systemctl restart $UNIT || cat ~/.pass | sudo -S /bin/systemctl start $UNIT
+          "
+
+      - name: Wait for seeder to complete (seed)
+        id: wait_seeder
+        if: inputs.seed
+        timeout-minutes: 25
+        run: |
+          LOG_BASE="$ROOT/logs/${{ inputs.env }}"
+          TODAY=$(date -u +%Y/%m/%d); TODAY_FLAT=$(date -u +%Y-%m-%d)
+          INFO_LOG="$LOG_BASE/$TODAY/info-$TODAY_FLAT.log"; ERROR_LOG="$LOG_BASE/$TODAY/error-$TODAY_FLAT.log"
+          echo "Waiting for app to start (up to 90s)..."
+          STARTED=0
+          for i in $(seq 1 18); do
+            sleep 5
+            if ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -p "$PORT" "$USER@$HOST" "curl -sf http://localhost:$APP_PORT${{ inputs.health_path }} 2>/dev/null || curl -sf -o /dev/null http://localhost:$APP_PORT/ 2>/dev/null"; then
+              STARTED=1; echo "App responding after $((i*5))s."; break
+            fi
+          done
+          [ "$STARTED" -eq 1 ] || { echo "::error::App did not start within 90s."; exit 1; }
+          echo "Polling for seeder completion (up to 20 min)..."
+          for i in $(seq 1 120); do
+            sleep 10
+            if ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -p "$PORT" "$USER@$HOST" "[ -f '$ERROR_LOG' ] && grep -q 'Database seeding failed' '$ERROR_LOG'" 2>/dev/null; then
+              echo "::error::DbSeeder threw — seeding FAILED. See $ERROR_LOG."; exit 1
+            fi
+            if ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -p "$PORT" "$USER@$HOST" "[ -f '$INFO_LOG' ] && grep -q 'Database seeding completed' '$INFO_LOG'" 2>/dev/null; then
+              echo "Seeder completed after $((i*10))s."; exit 0
+            fi
+          done
+          echo "::error::Seeder did not complete within 20 minutes."; exit 1
+
+      - name: Rollback on seeder failure (seed)
+        if: failure() && inputs.seed && steps.wait_seeder.outcome == 'failure' && env.PREV_RELEASE != ''
+        run: |
+          echo "::warning::Rolling back to ${{ env.PREV_RELEASE }}"
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -p "$PORT" "$USER@$HOST" "
+            sed -i '/SEED_ON_DEPLOY/d' $ENVF
+            ln -sfn '${{ env.PREV_RELEASE }}' $ROOT/env/${{ inputs.env }}
+            sudo -n /bin/systemctl start $UNIT 2>/dev/null || cat ~/.pass | sudo -S /bin/systemctl start $UNIT
+          "
+
+      - name: Remove seed-on-deploy flag (seed)
+        if: always() && inputs.seed
+        run: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -p "$PORT" "$USER@$HOST" "sed -i '/SEED_ON_DEPLOY/d' $ENVF || true"
+
+      - name: Prune old releases (keep last 3)
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -p "$PORT" "$USER@$HOST" \
+            "ls -1t $ROOT/releases/${{ inputs.env }}/ | tail -n +4 | xargs -I{} rm -rf $ROOT/releases/${{ inputs.env }}/{} 2>/dev/null || true"
+
+      - name: Health check
+        run: |
+          sleep 8
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -p "$PORT" "$USER@$HOST" \
+            "curl -sf http://localhost:$APP_PORT${{ inputs.health_path }} && echo 'Health check passed'"
+
+      - name: Tag release (live only)
+        if: inputs.is_live
+        run: |
+          git tag "deploy-live-$(date -u +%Y%m%d%H%M%S)" || true
+          git push origin --tags || echo "::warning::tag push skipped"
