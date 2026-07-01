@@ -51,6 +51,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Checkout ci-templates (cicd/lib scripts)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: TysonX-Teoranta/ci-templates
+          ref: ${{ github.workflow_ref }}
+          path: .ci-templates
+
+      - name: Link cicd/lib into the workspace
+        run: |
+          rm -rf cicd
+          mkdir -p cicd
+          cp -r .ci-templates/cicd/lib cicd/lib
+          chmod +x cicd/lib/*.sh
+
       - name: Restore
         run: dotnet restore "${{ inputs.solution }}"
 
