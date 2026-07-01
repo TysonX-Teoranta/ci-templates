@@ -68,15 +68,21 @@ jobs:
       # artifact, download it, and re-publish it on THIS promote run so deploy-staging can restore
       # from a single known promotion run. No rebuild, no re-seed.
       - name: Carry seed snapshot forward (download from RC run)
+        id: seedsnap
         if: inputs.target == 'staging'
         run: |
           ARTIFACT_NAME="seed-snapshot-${RC_TAG}"
           RUN_ID=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${ARTIFACT_NAME}&per_page=1" \
             -q '.artifacts[0].workflow_run.id' 2>/dev/null)
           if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
-            echo "::error::No seed snapshot artifact '$ARTIFACT_NAME' found — run Create RC for $RC_TAG first."
-            exit 1
+            # seed_snapshot is an OPTIONAL create-rc input (default false): a bump-only RC never
+            # builds a snapshot artifact. Treat absence as a clean skip, not a hard failure — record
+            # presence=false so the re-publish step below is gated off. (C178220508114290)
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No seed snapshot artifact '$ARTIFACT_NAME' — bump-only RC, skipping seed carry."
+            exit 0
           fi
+          echo "present=true" >> "$GITHUB_OUTPUT"
           echo "Found seed snapshot '$ARTIFACT_NAME' from create-rc run $RUN_ID."
           rm -rf seed-snapshot && mkdir -p seed-snapshot
           gh run download "$RUN_ID" -n "$ARTIFACT_NAME" -D seed-snapshot
@@ -89,7 +95,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Re-publish seed snapshot on this promotion run
-        if: inputs.target == 'staging'
+        if: inputs.target == 'staging' && steps.seedsnap.outputs.present == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: seed-snapshot-${{ env.RC_TAG }}
