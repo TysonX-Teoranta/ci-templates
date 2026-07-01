@@ -1,0 +1,58 @@
+# _checks-zero-tolerance.yml — CICD v2 step 3 (C178289477824693)
+# Reusable zero-tolerance build gate: CS/IDE/CA/SA (incl. CS1591) as hard errors,
+# plus comment-density. Called by a domain repo's own thin ci.yml via workflow_call.
+# NOT YET WIRED to any domain repo — scaffold only, pending the day-1 whole-repo
+# cleanup pass before it can gate a live dev branch (PLAN.md build order step 2).
+#
+# Deferred to a follow-up (not in this scaffold): diff-coverage >=80% gate, and the
+# silent-retry/10-fail-elevation loop (both need cross-run state, not yet designed).
+
+on:
+  workflow_call:
+    inputs:
+      solution:
+        required: true
+        type: string
+      scope:
+        description: "'diff' (changed .cs files only) or 'whole-repo'"
+        required: false
+        type: string
+        default: diff
+      min_comment_ratio:
+        description: "minimum comment-line/code-line ratio per file"
+        required: false
+        type: number
+        default: 0.05
+
+jobs:
+  zero-tolerance:
+    runs-on: [self-hosted, tysonx-dev]
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Restore
+        run: dotnet restore "${{ inputs.solution }}"
+
+      - name: Build — zero-tolerance (CS/IDE/CA/SA, CS1591 incl.)
+        run: |
+          dotnet build "${{ inputs.solution }}" -warnaserror \
+            -p:TreatWarningsAsErrors=true -p:WarningsNotAsErrors= -p:NoWarn= \
+            -p:GenerateDocumentationFile=true -p:Nullable=enable -p:AnalysisMode=All \
+            2>&1 | tee build-report.txt
+          test "${PIPESTATUS[0]}" -eq 0
+
+      - name: Comment-density gate
+        shell: bash
+        run: cicd/lib/comment-density.sh --scope "${{ inputs.scope }}" --min "${{ inputs.min_comment_ratio }}" --base "origin/${{ github.base_ref || 'main' }}"
+
+      - name: Attach failure report
+        if: failure()
+        run: |
+          echo "## Zero-tolerance gate failed" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -100 build-report.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
