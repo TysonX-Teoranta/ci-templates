@@ -8,8 +8,10 @@
 # workflow's completion event instead.
 #
 # Hard floor (never merges): non-open PRs, drafts, Release/Promote-titled PRs (TOTP/human
-# promotion gates), staging/live-bound base branches, unmergeable (conflicted) PRs, PRs
-# with any check not yet passing. No branch-protection dependency — this job IS the gate.
+# promotion gates), any base branch that isn't literally *-dev (ALLOWLIST, not a
+# staging/live denylist — a PR targeting main or anything else is out of scope by
+# default), unmergeable (conflicted) PRs, PRs with any check not yet passing. No
+# branch-protection dependency — this job IS the gate.
 name: _dev-automerge
 
 on:
@@ -59,8 +61,11 @@ jobs:
             exit 0
           fi
           case "$base" in
-            *staging*|*live*)
-              echo "SKIP: staging/live-bound base branch ($base) — never auto-merged."
+            *-dev)
+              : # in-scope dev branch — continue
+              ;;
+            *)
+              echo "SKIP: base branch ($base) is not a *-dev branch — allowlist, not denylist (never auto-merge to main/staging/live/anything else by default)."
               exit 0
               ;;
           esac
