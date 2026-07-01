@@ -12,6 +12,12 @@
 # staging/live denylist — a PR targeting main or anything else is out of scope by
 # default), unmergeable (conflicted) PRs, PRs with any check not yet passing. No
 # branch-protection dependency — this job IS the gate.
+#
+# Robustness (C178289477824693 hardening): GitHub computes `mergeable` asynchronously, so
+# right after a workflow_run event it is frequently UNKNOWN for a few seconds. This job
+# polls `mergeable` until it settles (up to POLL_MAX reads) so transient async lag is not
+# mislabelled as a conflict. Still fails closed — only MERGEABLE proceeds; CONFLICTING or
+# still-UNKNOWN after polling is FLAGged and left for manual resolution, never forced.
 name: _dev-automerge
 
 on:
@@ -36,17 +42,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ inputs.pr_number }}
+          POLL_MAX: '10'
+          POLL_SLEEP: '3'
         run: |
           set -euo pipefail
 
-          pr_json=$(gh pr view "$PR" --repo "$REPO" --json title,baseRefName,isDraft,mergeable,state)
+          pr_json=$(gh pr view "$PR" --repo "$REPO" --json title,baseRefName,isDraft,state)
           title=$(jq -r .title <<<"$pr_json")
           base=$(jq -r .baseRefName <<<"$pr_json")
           draft=$(jq -r .isDraft <<<"$pr_json")
-          mergeable=$(jq -r .mergeable <<<"$pr_json")
           state=$(jq -r .state <<<"$pr_json")
 
-          echo "PR #$PR: title='$title' base='$base' draft=$draft mergeable=$mergeable state=$state"
+          echo "PR #$PR: title='$title' base='$base' draft=$draft state=$state"
 
           if [ "$state" != "OPEN" ]; then
             echo "SKIP: PR is not open ($state)."
@@ -69,8 +76,18 @@ jobs:
               exit 0
               ;;
           esac
+
+          # Poll mergeable out of transient UNKNOWN (GitHub computes it async). Fails closed.
+          mergeable=$(gh pr view "$PR" --repo "$REPO" --json mergeable --jq .mergeable)
+          i=1
+          while [ "$mergeable" = "UNKNOWN" ] && [ "$i" -lt "$POLL_MAX" ]; do
+            sleep "$POLL_SLEEP"
+            mergeable=$(gh pr view "$PR" --repo "$REPO" --json mergeable --jq .mergeable)
+            i=$((i + 1))
+          done
+          echo "mergeable=$mergeable (after $i read(s))"
           if [ "$mergeable" != "MERGEABLE" ]; then
-            echo "FLAG (not forced): PR is not cleanly mergeable (mergeable=$mergeable) — likely a conflict. Leaving for manual resolution."
+            echo "FLAG (not forced): PR is not cleanly mergeable (mergeable=$mergeable) — left for manual resolution."
             exit 0
           fi
 
