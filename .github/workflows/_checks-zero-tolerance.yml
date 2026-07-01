@@ -1,11 +1,11 @@
 # _checks-zero-tolerance.yml — CICD v2 step 3 (C178289477824693)
-# Reusable zero-tolerance build gate: CS/IDE/CA/SA (incl. CS1591) as hard errors,
-# plus comment-density. Called by a domain repo's own thin ci.yml via workflow_call.
-# NOT YET WIRED to any domain repo — scaffold only, pending the day-1 whole-repo
-# cleanup pass before it can gate a live dev branch (PLAN.md build order step 2).
+# Reusable zero-tolerance build+test gate: CS/IDE/CA/SA (incl. CS1591) as hard
+# errors, comment-density, diff-coverage >=min%, and the silent retry/10-fail
+# elevation loop (via retry-tracker.sh PR labels). Called by a domain repo's own
+# thin ci.yml via workflow_call, on pull_request only (retry-tracker needs a PR).
 #
-# Deferred to a follow-up (not in this scaffold): diff-coverage >=80% gate, and the
-# silent-retry/10-fail-elevation loop (both need cross-run state, not yet designed).
+# NOT YET WIRED to any domain repo — scaffold only. Wiring into lodgers needs the
+# day-1 whole-repo cleanup pass first (PLAN.md build order step 2), not done here.
 
 on:
   workflow_call:
@@ -13,21 +13,38 @@ on:
       solution:
         required: true
         type: string
+      test_project:
+        description: "test project/solution to run for coverage; defaults to solution"
+        required: false
+        type: string
+        default: ""
       scope:
-        description: "'diff' (changed .cs files only) or 'whole-repo'"
+        description: "'diff' (changed .cs files only) or 'whole-repo', for comment-density"
         required: false
         type: string
         default: diff
       min_comment_ratio:
-        description: "minimum comment-line/code-line ratio per file"
         required: false
         type: number
         default: 0.05
+      min_diff_coverage:
+        required: false
+        type: number
+        default: 80
+      retry_limit:
+        required: false
+        type: number
+        default: 10
 
 jobs:
   zero-tolerance:
+    if: github.event_name == 'pull_request'
     runs-on: [self-hosted, tysonx-dev]
     timeout-minutes: 40
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -38,6 +55,7 @@ jobs:
         run: dotnet restore "${{ inputs.solution }}"
 
       - name: Build — zero-tolerance (CS/IDE/CA/SA, CS1591 incl.)
+        id: build
         run: |
           dotnet build "${{ inputs.solution }}" -warnaserror \
             -p:TreatWarningsAsErrors=true -p:WarningsNotAsErrors= -p:NoWarn= \
@@ -46,13 +64,42 @@ jobs:
           test "${PIPESTATUS[0]}" -eq 0
 
       - name: Comment-density gate
-        shell: bash
-        run: cicd/lib/comment-density.sh --scope "${{ inputs.scope }}" --min "${{ inputs.min_comment_ratio }}" --base "origin/${{ github.base_ref || 'main' }}"
+        id: comments
+        run: cicd/lib/comment-density.sh --scope "${{ inputs.scope }}" --min "${{ inputs.min_comment_ratio }}" --base "origin/${{ github.base_ref }}"
+
+      - name: Test + coverage
+        id: test
+        run: |
+          dotnet test "${{ inputs.test_project || inputs.solution }}" \
+            --collect:"XPlat Code Coverage" --results-directory ./coverage \
+            2>&1 | tee test-report.txt
+          test "${PIPESTATUS[0]}" -eq 0
+
+      - name: Diff-coverage gate (>= min_diff_coverage% of changed lines)
+        id: diffcov
+        run: |
+          COBERTURA=$(find ./coverage -name 'coverage.cobertura.xml' | head -1)
+          cicd/lib/diff-coverage.sh --cobertura "$COBERTURA" --min "${{ inputs.min_diff_coverage }}" --base "origin/${{ github.base_ref }}" -v
 
       - name: Attach failure report
         if: failure()
         run: |
           echo "## Zero-tolerance gate failed" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          tail -100 build-report.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          { tail -100 build-report.txt 2>/dev/null; tail -100 test-report.txt 2>/dev/null; } >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retry-tracker — record result, elevate at limit
+        if: always()
+        run: |
+          RESULT="fail"
+          if [ "${{ steps.build.outcome }}" = "success" ] && \
+             [ "${{ steps.comments.outcome }}" = "success" ] && \
+             [ "${{ steps.test.outcome }}" = "success" ] && \
+             [ "${{ steps.diffcov.outcome }}" = "success" ]; then
+            RESULT="pass"
+          fi
+          cicd/lib/retry-tracker.sh --pr "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" --result "$RESULT" --limit "${{ inputs.retry_limit }}" -v
+        env:
+          GH_TOKEN: ${{ github.token }}
