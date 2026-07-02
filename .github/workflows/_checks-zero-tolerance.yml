@@ -96,7 +96,7 @@ jobs:
           # standalone dotnet-coverage tool instead — it instruments out-of-process
           # rather than hooking the test host in-process like coverlet's collector,
           # avoiding whatever ARM64-specific interaction was hanging it.
-          dotnet tool install --global dotnet-coverage --version 17.14.5
+          dotnet tool install --global dotnet-coverage
           mkdir -p ./coverage
           dotnet-coverage collect \
             "dotnet test \"${{ inputs.test_project }}\" --blame-hang-timeout 8m --blame-hang-dump-type mini --diag ./coverage/diag.log" \
