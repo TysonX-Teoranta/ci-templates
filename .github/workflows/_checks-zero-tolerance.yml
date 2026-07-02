@@ -86,9 +86,12 @@ jobs:
       - name: Test + coverage
         id: test
         if: inputs.test_project != ''
+        timeout-minutes: 15
         run: |
           dotnet test "${{ inputs.test_project }}" \
             --collect:"XPlat Code Coverage" --results-directory ./coverage \
+            --blame-hang-timeout 8m --blame-hang-dump-type mini \
+            --diag ./coverage/diag.log \
             2>&1 | tee test-report.txt
           test "${PIPESTATUS[0]}" -eq 0
 
