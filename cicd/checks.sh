@@ -3,10 +3,10 @@
 # One entry point, driven by --domain against domains.yml, so per-repo gate copies
 # cannot drift. Runs a real `dotnet build` under a frozen zero-tolerance analyzer
 # posture (Roslyn IDE/CA/SA/CS incl. CS1591) over the domain's app project, plus a
-# JSON validity/canonical-format check over in-scope .json, plus validity+hygiene
-# checks over in-scope .xml/.csproj/.props/.targets, .yml/.yaml and the repo-root
-# .editorconfig, and fails on any in-scope finding. Native GH-Actions + bash, zero
-# AI at runtime.
+# JSON validity/canonical-format check over in-scope .json, validity+hygiene checks
+# over in-scope .xml/.csproj/.props/.targets, .yml/.yaml, .sh (shellcheck) and .md
+# (fence/whitespace), plus the repo-root .editorconfig, and fails on any in-scope
+# finding. Native GH-Actions + bash, zero AI at runtime.
 # Fleet V3: strict mode, -v verbose, --dry-run, offline-testable via selftest.sh.
 
 # shellcheck source=lib/common.sh
@@ -146,7 +146,7 @@ DIFF_RE=""
 for d in "${APP_DIRS[@]}"; do
   DIFF_RE+="${DIFF_RE:+|}$(printf '%s' "$d" | sed 's/[.]/\\./g')"
 done
-DIFF_RE="^(${DIFF_RE})/.*\.(cs|razor|json|xml|csproj|props|targets|yml|yaml)$"
+DIFF_RE="^(${DIFF_RE})/.*\.(cs|razor|json|xml|csproj|props|targets|yml|yaml|sh|md)$"
 
 IN_SCOPE_FILES=()
 ALL_CHANGED_FILES=()
@@ -303,8 +303,44 @@ if { [ "$SCOPE" = "whole" ] || [ "$EDITORCONFIG_CHANGED" -eq 1 ]; } && [ -f "$DO
   EDITORCONFIG_FAILS=$("$CICD_ROOT/lib/editorconfig-lint.sh" --report-append "$FINDINGS_TXT" "$DOMAIN_ROOT/.editorconfig") || true
 fi
 
-GATE_TOTAL=$((ANALYZER_COUNT + DENSITY_GATE + JSON_FAILS + XML_FAILS + YAML_FAILS + EDITORCONFIG_FAILS))
-log "findings: analyzer=$ANALYZER_COUNT comment-density=$DENSITY_FAILS json=$JSON_FAILS xml=$XML_FAILS yaml=$YAML_FAILS editorconfig=$EDITORCONFIG_FAILS gate-total=$GATE_TOTAL (build rc=$BUILD_RC)"
+# --- Shell-script check (.sh, via shellcheck) ---------------------------------
+SHELL_FAILS=0
+SHELL_TARGETS=()
+if [ "$SCOPE" = "whole" ]; then
+  for d in "${APP_DIRS[@]}"; do
+    [ -d "$DOMAIN_ROOT/$d" ] || continue
+    while IFS= read -r f; do SHELL_TARGETS+=("$f"); done \
+      < <(find "$DOMAIN_ROOT/$d" -name '*.sh' -not -path '*/obj/*' -not -path '*/bin/*' 2>/dev/null)
+  done
+else
+  for f in "${IN_SCOPE_FILES[@]}"; do
+    case "$f" in *.sh) SHELL_TARGETS+=("$DOMAIN_ROOT/$f") ;; esac
+  done
+fi
+if [ "${#SHELL_TARGETS[@]}" -gt 0 ]; then
+  SHELL_FAILS=$("$CICD_ROOT/lib/shell-lint.sh" --report-append "$FINDINGS_TXT" "${SHELL_TARGETS[@]}") || true
+fi
+
+# --- Markdown check (.md — unclosed fences + whitespace hygiene) -------------
+MD_FAILS=0
+MD_TARGETS=()
+if [ "$SCOPE" = "whole" ]; then
+  for d in "${APP_DIRS[@]}"; do
+    [ -d "$DOMAIN_ROOT/$d" ] || continue
+    while IFS= read -r f; do MD_TARGETS+=("$f"); done \
+      < <(find "$DOMAIN_ROOT/$d" -name '*.md' -not -path '*/obj/*' -not -path '*/bin/*' 2>/dev/null)
+  done
+else
+  for f in "${IN_SCOPE_FILES[@]}"; do
+    case "$f" in *.md) MD_TARGETS+=("$DOMAIN_ROOT/$f") ;; esac
+  done
+fi
+if [ "${#MD_TARGETS[@]}" -gt 0 ]; then
+  MD_FAILS=$("$CICD_ROOT/lib/md-lint.sh" --report-append "$FINDINGS_TXT" "${MD_TARGETS[@]}") || true
+fi
+
+GATE_TOTAL=$((ANALYZER_COUNT + DENSITY_GATE + JSON_FAILS + XML_FAILS + YAML_FAILS + EDITORCONFIG_FAILS + SHELL_FAILS + MD_FAILS))
+log "findings: analyzer=$ANALYZER_COUNT comment-density=$DENSITY_FAILS json=$JSON_FAILS xml=$XML_FAILS yaml=$YAML_FAILS editorconfig=$EDITORCONFIG_FAILS shell=$SHELL_FAILS md=$MD_FAILS gate-total=$GATE_TOTAL (build rc=$BUILD_RC)"
 log "report: $FINDINGS_JSON  |  $FINDINGS_TXT"
 
 # --- Verdict -----------------------------------------------------------------
