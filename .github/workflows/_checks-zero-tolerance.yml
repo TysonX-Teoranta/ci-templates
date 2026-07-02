@@ -88,14 +88,19 @@ jobs:
         if: inputs.test_project != ''
         timeout-minutes: 15
         run: |
-          # ISOLATION TEST (C178289477824693): --collect:"XPlat Code Coverage" hung
-          # twice in a row on this ARM64 self-hosted runner (runs 28599505994,
-          # 28600866064 — 8min blame-hang-timeout fired with zero test progress both
-          # times). Dropping the coverage collector here to prove/disprove it's the
-          # actual hang source before committing to a real fix.
-          dotnet test "${{ inputs.test_project }}" \
-            --blame-hang-timeout 8m --blame-hang-dump-type mini \
-            --diag ./coverage/diag.log \
+          # coverlet's --collect:"XPlat Code Coverage" hung twice in a row on this
+          # ARM64 self-hosted runner (C178289477824693, runs 28599505994,
+          # 28600866064 — 8min blame-hang-timeout fired, zero test progress both
+          # times). Isolation test (run 28601979665) proved dotnet test itself
+          # completes fine in ~5min with the collector removed. Use Microsoft's
+          # standalone dotnet-coverage tool instead — it instruments out-of-process
+          # rather than hooking the test host in-process like coverlet's collector,
+          # avoiding whatever ARM64-specific interaction was hanging it.
+          dotnet tool install --global dotnet-coverage --version 17.14.5
+          mkdir -p ./coverage
+          dotnet-coverage collect \
+            "dotnet test \"${{ inputs.test_project }}\" --blame-hang-timeout 8m --blame-hang-dump-type mini --diag ./coverage/diag.log" \
+            --output ./coverage/coverage.cobertura.xml --output-format cobertura \
             2>&1 | tee test-report.txt
           test "${PIPESTATUS[0]}" -eq 0
 
