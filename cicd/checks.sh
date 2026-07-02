@@ -3,8 +3,10 @@
 # One entry point, driven by --domain against domains.yml, so per-repo gate copies
 # cannot drift. Runs a real `dotnet build` under a frozen zero-tolerance analyzer
 # posture (Roslyn IDE/CA/SA/CS incl. CS1591) over the domain's app project, plus a
-# JSON validity/canonical-format check over in-scope .json, and fails on any
-# in-scope finding. Native GH-Actions + bash, zero AI at runtime.
+# JSON validity/canonical-format check over in-scope .json, plus validity+hygiene
+# checks over in-scope .xml/.csproj/.props/.targets, .yml/.yaml and the repo-root
+# .editorconfig, and fails on any in-scope finding. Native GH-Actions + bash, zero
+# AI at runtime.
 # Fleet V3: strict mode, -v verbose, --dry-run, offline-testable via selftest.sh.
 
 # shellcheck source=lib/common.sh
@@ -144,20 +146,23 @@ DIFF_RE=""
 for d in "${APP_DIRS[@]}"; do
   DIFF_RE+="${DIFF_RE:+|}$(printf '%s' "$d" | sed 's/[.]/\\./g')"
 done
-DIFF_RE="^(${DIFF_RE})/.*\.(cs|razor|json)$"
+DIFF_RE="^(${DIFF_RE})/.*\.(cs|razor|json|xml|csproj|props|targets|yml|yaml)$"
 
 IN_SCOPE_FILES=()
+ALL_CHANGED_FILES=()
+EDITORCONFIG_CHANGED=0
 if [ "$SCOPE" = "diff" ]; then
   if ! git -C "$DOMAIN_ROOT" rev-parse --verify -q "$BASE_REF" >/dev/null; then
     warn "base ref '$BASE_REF' not found in checkout; falling back to whole-repo scope"
     SCOPE="whole"
   else
-    mapfile -t IN_SCOPE_FILES < <(
-      git -C "$DOMAIN_ROOT" diff --name-only --diff-filter=ACMR "$BASE_REF"...HEAD 2>/dev/null \
-        | grep -E "$DIFF_RE" || true
+    mapfile -t ALL_CHANGED_FILES < <(
+      git -C "$DOMAIN_ROOT" diff --name-only --diff-filter=ACMR "$BASE_REF"...HEAD 2>/dev/null || true
     )
+    mapfile -t IN_SCOPE_FILES < <(printf '%s\n' "${ALL_CHANGED_FILES[@]}" | grep -E "$DIFF_RE" || true)
+    printf '%s\n' "${ALL_CHANGED_FILES[@]}" | grep -qx '\.editorconfig' && EDITORCONFIG_CHANGED=1
     log "diff scope: ${#IN_SCOPE_FILES[@]} changed source file(s) vs $BASE_REF"
-    if [ "${#IN_SCOPE_FILES[@]}" -eq 0 ]; then
+    if [ "${#IN_SCOPE_FILES[@]}" -eq 0 ] && [ "$EDITORCONFIG_CHANGED" -eq 0 ]; then
       log "no in-scope source changes — gate GREEN by vacuity"
       printf '{"contract":"C178289477824693","domain":"%s","scope":"diff","mode":"%s","total":0,"findings":[]}\n' \
         "$DOMAIN" "$MODE" > "$FINDINGS_JSON"
@@ -252,8 +257,54 @@ if [ "${#JSON_TARGETS[@]}" -gt 0 ]; then
   JSON_FAILS=$("$CICD_ROOT/lib/json-lint.sh" --report-append "$FINDINGS_TXT" "${JSON_TARGETS[@]}") || true
 fi
 
-GATE_TOTAL=$((ANALYZER_COUNT + DENSITY_GATE + JSON_FAILS))
-log "findings: analyzer=$ANALYZER_COUNT comment-density=$DENSITY_FAILS json=$JSON_FAILS gate-total=$GATE_TOTAL (build rc=$BUILD_RC)"
+# --- XML-family validity + whitespace-hygiene check (.xml/.csproj/.props/.targets) --
+XML_FAILS=0
+XML_TARGETS=()
+if [ "$SCOPE" = "whole" ]; then
+  for d in "${APP_DIRS[@]}"; do
+    [ -d "$DOMAIN_ROOT/$d" ] || continue
+    while IFS= read -r f; do XML_TARGETS+=("$f"); done \
+      < <(find "$DOMAIN_ROOT/$d" \( -name '*.xml' -o -name '*.csproj' -o -name '*.props' -o -name '*.targets' \) \
+            -not -path '*/obj/*' -not -path '*/bin/*' 2>/dev/null)
+  done
+else
+  for f in "${IN_SCOPE_FILES[@]}"; do
+    case "$f" in *.xml|*.csproj|*.props|*.targets) XML_TARGETS+=("$DOMAIN_ROOT/$f") ;; esac
+  done
+fi
+if [ "${#XML_TARGETS[@]}" -gt 0 ]; then
+  XML_FAILS=$("$CICD_ROOT/lib/xml-lint.sh" --report-append "$FINDINGS_TXT" "${XML_TARGETS[@]}") || true
+fi
+
+# --- YAML validity + whitespace-hygiene check (.yml/.yaml) -------------------
+YAML_FAILS=0
+YAML_TARGETS=()
+if [ "$SCOPE" = "whole" ]; then
+  for d in "${APP_DIRS[@]}"; do
+    [ -d "$DOMAIN_ROOT/$d" ] || continue
+    while IFS= read -r f; do YAML_TARGETS+=("$f"); done \
+      < <(find "$DOMAIN_ROOT/$d" \( -name '*.yml' -o -name '*.yaml' \) \
+            -not -path '*/obj/*' -not -path '*/bin/*' 2>/dev/null)
+  done
+else
+  for f in "${IN_SCOPE_FILES[@]}"; do
+    case "$f" in *.yml|*.yaml) YAML_TARGETS+=("$DOMAIN_ROOT/$f") ;; esac
+  done
+fi
+if [ "${#YAML_TARGETS[@]}" -gt 0 ]; then
+  YAML_FAILS=$("$CICD_ROOT/lib/yaml-lint.sh" --report-append "$FINDINGS_TXT" "${YAML_TARGETS[@]}") || true
+fi
+
+# --- Repo-root .editorconfig check --------------------------------------------
+# Not under app_dirs (applies repo-wide), so it's scoped independently: whole-scope
+# checks it if present, diff-scope checks it only when the diff actually touched it.
+EDITORCONFIG_FAILS=0
+if { [ "$SCOPE" = "whole" ] || [ "$EDITORCONFIG_CHANGED" -eq 1 ]; } && [ -f "$DOMAIN_ROOT/.editorconfig" ]; then
+  EDITORCONFIG_FAILS=$("$CICD_ROOT/lib/editorconfig-lint.sh" --report-append "$FINDINGS_TXT" "$DOMAIN_ROOT/.editorconfig") || true
+fi
+
+GATE_TOTAL=$((ANALYZER_COUNT + DENSITY_GATE + JSON_FAILS + XML_FAILS + YAML_FAILS + EDITORCONFIG_FAILS))
+log "findings: analyzer=$ANALYZER_COUNT comment-density=$DENSITY_FAILS json=$JSON_FAILS xml=$XML_FAILS yaml=$YAML_FAILS editorconfig=$EDITORCONFIG_FAILS gate-total=$GATE_TOTAL (build rc=$BUILD_RC)"
 log "report: $FINDINGS_JSON  |  $FINDINGS_TXT"
 
 # --- Verdict -----------------------------------------------------------------
