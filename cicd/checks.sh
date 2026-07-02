@@ -2,8 +2,9 @@
 # checks.sh — central CICD v2 zero-tolerance gate (contract C178289477824693).
 # One entry point, driven by --domain against domains.yml, so per-repo gate copies
 # cannot drift. Runs a real `dotnet build` under a frozen zero-tolerance analyzer
-# posture (Roslyn IDE/CA/SA/CS incl. CS1591) over the domain's app project and fails
-# on any in-scope finding. Native GH-Actions + bash, zero AI at runtime.
+# posture (Roslyn IDE/CA/SA/CS incl. CS1591) over the domain's app project, plus a
+# JSON validity/canonical-format check over in-scope .json, and fails on any
+# in-scope finding. Native GH-Actions + bash, zero AI at runtime.
 # Fleet V3: strict mode, -v verbose, --dry-run, offline-testable via selftest.sh.
 
 # shellcheck source=lib/common.sh
@@ -126,6 +127,7 @@ ZEROTOL_PROPS=(
 
 require dotnet
 require git
+require jq
 
 mkdir -p "$REPORT_DIR"
 RAW_LOG="$REPORT_DIR/build.raw.log"
@@ -142,7 +144,7 @@ DIFF_RE=""
 for d in "${APP_DIRS[@]}"; do
   DIFF_RE+="${DIFF_RE:+|}$(printf '%s' "$d" | sed 's/[.]/\\./g')"
 done
-DIFF_RE="^(${DIFF_RE})/.*\.(cs|razor)$"
+DIFF_RE="^(${DIFF_RE})/.*\.(cs|razor|json)$"
 
 IN_SCOPE_FILES=()
 if [ "$SCOPE" = "diff" ]; then
@@ -222,13 +224,36 @@ fi
 # Comment-density is advisory unless --strict-density: it never fails the gate by
 # default (a fixed ratio is a proxy, not a defect), but is always reported.
 if [ "$STRICT_DENSITY" = "1" ]; then
-  GATE_TOTAL=$((ANALYZER_COUNT + DENSITY_FAILS))
+  DENSITY_GATE=$DENSITY_FAILS
 else
-  GATE_TOTAL=$ANALYZER_COUNT
+  DENSITY_GATE=0
   [ "$DENSITY_FAILS" -gt 0 ] && \
     warn "comment-density: $DENSITY_FAILS advisory finding(s) — non-blocking (use --strict-density to enforce)"
 fi
-log "findings: analyzer=$ANALYZER_COUNT comment-density=$DENSITY_FAILS gate-total=$GATE_TOTAL (build rc=$BUILD_RC)"
+
+# --- JSON validity + canonical-formatting check ------------------------------
+# Unlike comment-density this is NOT advisory: valid/well-formatted JSON is
+# unambiguous (no proxy-metric judgment call), so it always gates.
+JSON_FAILS=0
+JSON_TARGETS=()
+if [ "$SCOPE" = "whole" ]; then
+  for d in "${APP_DIRS[@]}"; do
+    [ -d "$DOMAIN_ROOT/$d" ] || continue
+    while IFS= read -r f; do JSON_TARGETS+=("$f"); done \
+      < <(find "$DOMAIN_ROOT/$d" -name '*.json' \
+            -not -path '*/obj/*' -not -path '*/bin/*' -not -path '*/node_modules/*' 2>/dev/null)
+  done
+else
+  for f in "${IN_SCOPE_FILES[@]}"; do
+    case "$f" in *.json) JSON_TARGETS+=("$DOMAIN_ROOT/$f") ;; esac
+  done
+fi
+if [ "${#JSON_TARGETS[@]}" -gt 0 ]; then
+  JSON_FAILS=$("$CICD_ROOT/lib/json-lint.sh" --report-append "$FINDINGS_TXT" "${JSON_TARGETS[@]}") || true
+fi
+
+GATE_TOTAL=$((ANALYZER_COUNT + DENSITY_GATE + JSON_FAILS))
+log "findings: analyzer=$ANALYZER_COUNT comment-density=$DENSITY_FAILS json=$JSON_FAILS gate-total=$GATE_TOTAL (build rc=$BUILD_RC)"
 log "report: $FINDINGS_JSON  |  $FINDINGS_TXT"
 
 # --- Verdict -----------------------------------------------------------------
