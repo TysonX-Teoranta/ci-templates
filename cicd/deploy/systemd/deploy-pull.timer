@@ -1,0 +1,23 @@
+# deploy-pull.timer — schedules the CICD v2 pull-agent (contract C178289477824693, Phase 5).
+#
+# REVIEWABLE FILE ONLY. Not installed, enabled, or started by the PR. Pairs with
+# deploy-pull.service: this timer is the poll scheduler — the service is oneshot and
+# exits after each pass. To adopt: review + copy both units to /etc/systemd/system/,
+# then `systemctl enable --now deploy-pull.timer`.
+
+[Unit]
+Description=Poll the release channel for signed deploys (CICD v2 pull-agent)
+Documentation=https://github.com/TysonX-Teoranta/ci-templates
+
+[Timer]
+# First pass shortly after boot, then every 2 minutes. RandomizedDelaySec spreads
+# load so a fleet of hosts does not stampede the channel on the same second.
+OnBootSec=90s
+OnUnitActiveSec=2min
+RandomizedDelaySec=20s
+# Catch up on a single missed tick if the host was asleep/off.
+Persistent=true
+Unit=deploy-pull.service
+
+[Install]
+WantedBy=timers.target

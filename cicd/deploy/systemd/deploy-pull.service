@@ -1,0 +1,61 @@
+# deploy-pull.service — CICD v2 pull-agent deploy runner (contract C178289477824693, Phase 5).
+#
+# REVIEWABLE FILE ONLY. Not installed, enabled, or started by the PR. To adopt on a
+# deploy host, review + copy to /etc/systemd/system/, set the [Service] environment to
+# the host's real channel/keys/accessor, then `systemctl enable --now deploy-pull.timer`.
+#
+# Oneshot triggered by deploy-pull.timer: one poll pass per tick, then exits. It does
+# NOT run continuously — the timer is the scheduler. Zero AI at runtime.
+
+[Unit]
+Description=TysonX CICD v2 pull-agent deploy runner (one poll pass)
+Documentation=https://github.com/TysonX-Teoranta/ci-templates
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+
+# Runtime identity — a low-privilege deploy account, NOT root.
+User=deploy
+Group=deploy
+
+# --- Deploy configuration (edit per host before enabling) --------------------
+# RELEASE_CHANNEL : dir path or https:// base the signed manifests+artifacts are pulled from.
+# DEPLOY_BASE     : per-domain state root (releases/, current symlink, current-version).
+# COSIGN_PUBKEY   : the Phase-3 cosign public key releases are verified against.
+# SECCTL_BIN      : the vault accessor used to inject secrets at deploy time.
+Environment=RELEASE_CHANNEL=
+Environment=DEPLOY_BASE=/var/lib/tysonx-deploy
+Environment=COSIGN_PUBKEY=/var/lib/tysonx-deploy/keys/cosign-phase3.pub
+Environment=COSIGN_BIN=cosign
+Environment=SECCTL_BIN=secctl
+Environment=RETAIN=3
+
+# Adjust WorkingDirectory to wherever ci-templates is checked out on the host.
+WorkingDirectory=/opt/ci-templates
+ExecStart=/opt/ci-templates/cicd/deploy-pull.sh --once
+
+# --- Hardening ---------------------------------------------------------------
+# This unit handles injected secrets and is the trust boundary for signature
+# verification, so lock the sandbox down. ReadWritePaths must include DEPLOY_BASE.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+UMask=0077
+ReadWritePaths=/var/lib/tysonx-deploy
+
+# Bound retries so a persistently-bad channel cannot hot-loop.
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
