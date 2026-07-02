@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # selftest.sh — offline unit tests for the CICD v2 spine (contract C178289477824693).
 #
-# Proves the deterministic parsers behave correctly WITHOUT dotnet, GitHub or a
+# Proves the deterministic parsers + gates behave correctly WITHOUT dotnet, GitHub or a
 # checkout — the Fleet-V3 "offline-testable" invariant. Feeds each lib synthetic
 # fixtures and asserts on the structured output. Exit 0 = all green, 1 = a failure.
 #
@@ -67,6 +67,32 @@ printf '// a\n// b\nint x=1;\n' > "$WORK/Small.cs"
 ok "density/small-exempt"  "$(bash "$CD" "$WORK/Small.cs" 2>/dev/null)" "0"
 { for i in $(seq 1 20); do echo "// comment $i"; done; for i in $(seq 1 20); do echo "int v$i=$i;"; done; } > "$WORK/Good.cs"
 ok "density/commented-passes" "$(bash "$CD" "$WORK/Good.cs" 2>/dev/null)" "0"
+
+# --- Phase 4: promote.sh — release-signal emitter (deterministic, offline) -----
+PROMOTE="$CICD_ROOT/promote.sh"
+pstg="$(bash "$PROMOTE" staging --domain lodgers --ref abc123 --dry-run 2>/dev/null)"
+ok "promote/staging-env"        "$(printf '%s' "$pstg" | grep -c '"env": "staging"')" "1"
+ok "promote/staging-domain"     "$(printf '%s' "$pstg" | grep -c '"domain": "lodgers"')" "1"
+ok "promote/staging-ref"        "$(printf '%s' "$pstg" | grep -c '"ref": "abc123"')" "1"
+ok "promote/staging-totp-false" "$(printf '%s' "$pstg" | grep -c '"totp_required": false')" "1"
+pliv="$(bash "$PROMOTE" live --domain lodgers --ref abc123 --dry-run 2>/dev/null)"
+ok "promote/live-totp-true"     "$(printf '%s' "$pliv" | grep -c '"totp_required": true')" "1"
+bash "$PROMOTE" bogus --domain lodgers --dry-run >/dev/null 2>&1;  ok "promote/bad-env-exit2"        "$?" "2"
+bash "$PROMOTE" staging --dry-run >/dev/null 2>&1;                 ok "promote/missing-domain-exit2" "$?" "2"
+bash "$PROMOTE" staging --domain notreal --dry-run >/dev/null 2>&1; ok "promote/unknown-domain-exit3" "$?" "3"
+
+# --- Phase 4: totp-verify.sh — external live gate (deterministic, offline) -----
+TOTP="$CICD_ROOT/totp-verify.sh"
+TSEED="JBSWY3DPEHPK3PXP"
+tseedfile="$WORK/seed"
+printf '%s\n' "$TSEED" > "$tseedfile"
+tcode="$(oathtool --totp -b "$TSEED")"
+CICD_TOTP_SEED_FILE="$tseedfile" bash "$TOTP" --code "$tcode" >/dev/null 2>&1;             ok "totp/valid-code-exit0" "$?" "0"
+CICD_TOTP_SEED_FILE="$tseedfile" bash "$TOTP" --code "$tcode" --dry-run >/dev/null 2>&1;   ok "totp/dry-run-exit0"    "$?" "0"
+CICD_TOTP_SEED_FILE="$tseedfile" bash "$TOTP" --code "000000" --window 0 >/dev/null 2>&1;  ok "totp/wrong-code-exit1" "$?" "1"
+CICD_TOTP_SEED_FILE="$tseedfile" bash "$TOTP" --code "12ab56" >/dev/null 2>&1;             ok "totp/nondigit-exit2"   "$?" "2"
+bash "$TOTP" --code "$tcode" >/dev/null 2>&1;                                              ok "totp/no-seed-exit4"    "$?" "4"
+CICD_TOTP_SEED_FILE="$tseedfile" bash "$TOTP" >/dev/null 2>&1;                             ok "totp/no-code-exit5"    "$?" "5"
 
 # --- Verdict ------------------------------------------------------------------
 log "selftest: $PASS passed, $FAIL failed"

@@ -1,0 +1,82 @@
+# _promote-live.yml — CICD v2 Phase 4: staging->live promotion gate (C178289477824693).
+# THIN reusable workflow over the FAT bash spine, carrying TWO independent structural
+# gates so live blast radius is independent of GitHub/model cooperation:
+#   1. `environment: live` — GH Environment protection (required-reviewer email-approval)
+#      pauses the job until a human approves. Configured per domain repo, out-of-band.
+#   2. cicd/totp-verify.sh — an EXTERNAL deterministic TOTP check against the CROM-PRIVATE
+#      seed. The seed is NEVER a GitHub secret; it is provisioned out-of-band on OUR
+#      self-hosted spine runner, so GitHub structurally cannot mint the code. Only the
+#      ephemeral 6-digit code Crom types is passed in (via the caller's workflow_dispatch).
+# The signal is emitted ONLY after BOTH gates pass. Zero AI at runtime.
+# See cicd/PROMOTION-GATES.md for the out-of-band provisioning contract (the BLOCKERs).
+name: _promote-live
+
+on:
+  workflow_call:
+    inputs:
+      domain:
+        description: "domains.yml key being promoted to live (e.g. lodgers)"
+        required: true
+        type: string
+      ref:
+        description: "exact commit SHA being promoted (the staging-verified, signed build)"
+        required: true
+        type: string
+      totp_code:
+        description: "ephemeral 6-digit live TOTP Crom read from his authenticator"
+        required: true
+        type: string
+      artifact:
+        description: "signed-artifact reference (registry/bucket id) to release"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  promote-live:
+    name: Promote to live (GH Env protection + external TOTP)
+    # OUR spine: the CROM-PRIVATE seed lives on this self-hosted runner only, never in
+    # GitHub. The pulse runner is the fleet's promotion/gate control plane.
+    runs-on: [self-hosted, tysonx-pulse]
+    # STRUCTURAL GATE 1: required reviewers on the 'live' Environment pause this job.
+    environment: live
+    timeout-minutes: 15
+    steps:
+      - name: Checkout ci-templates spine
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: TysonX-Teoranta/ci-templates
+          ref: main
+          path: .ci-templates
+
+      # STRUCTURAL GATE 2: external TOTP against the CROM-PRIVATE seed on this spine.
+      # CICD_TOTP_SEED_FILE is a repo/org *variable* holding the on-disk PATH to the
+      # seed (not the seed itself); the seed content never enters GitHub. If the seed
+      # is not provisioned, totp-verify.sh exits non-zero (a real BLOCKER, not a pass).
+      - name: External live TOTP gate (cicd/totp-verify.sh — CROM-PRIVATE seed, off GitHub)
+        env:
+          CICD_TOTP_SEED_FILE: ${{ vars.CICD_TOTP_SEED_FILE }}
+          CICD_TOTP_CODE: ${{ inputs.totp_code }}
+        run: |
+          chmod +x .ci-templates/cicd/totp-verify.sh .ci-templates/cicd/lib/*.sh
+          .ci-templates/cicd/totp-verify.sh -v
+
+      - name: Emit approved-release signal (cicd/promote.sh live)
+        env:
+          CICD_SIGNAL_DIR: ${{ github.workspace }}/signals
+        run: |
+          chmod +x .ci-templates/cicd/promote.sh .ci-templates/cicd/lib/*.sh
+          .ci-templates/cicd/promote.sh live \
+            --domain "${{ inputs.domain }}" \
+            --ref "${{ inputs.ref }}" \
+            --artifact "${{ inputs.artifact }}" \
+            --signal-dir "$CICD_SIGNAL_DIR" -v
+          {
+            echo "## Approved-release signal (live)"
+            echo '```json'
+            cat "$CICD_SIGNAL_DIR/${{ inputs.domain }}-live-release.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

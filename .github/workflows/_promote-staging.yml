@@ -1,0 +1,62 @@
+# _promote-staging.yml — CICD v2 Phase 4: dev->staging promotion gate (C178289477824693).
+# THIN reusable workflow over the FAT bash spine. The ONLY thing this YAML adds beyond
+# calling cicd/promote.sh is the STRUCTURAL gate: `environment: staging`. In each caller
+# (per-domain) repo, that GH Environment is configured with REQUIRED REVIEWERS
+# (email-approval) — so this job PAUSES until a human approves by email BEFORE
+# cicd/promote.sh emits the approved-release signal the staging pull-agent polls.
+# Zero AI at runtime. The GH Environment protection rules are provisioned out-of-band
+# in each domain repo (see cicd/PROMOTION-GATES.md) — this workflow only references them.
+name: _promote-staging
+
+on:
+  workflow_call:
+    inputs:
+      domain:
+        description: "domains.yml key being promoted to staging (e.g. lodgers)"
+        required: true
+        type: string
+      ref:
+        description: "exact commit SHA being promoted (the dev-green, signed build)"
+        required: true
+        type: string
+      artifact:
+        description: "signed-artifact reference (registry/bucket id) to release"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  promote-staging:
+    name: Promote to staging (email-approval gate)
+    runs-on: ubuntu-latest
+    # STRUCTURAL GATE: required reviewers on the 'staging' Environment pause this job
+    # until a human approves by email. Configured per domain repo, out-of-band.
+    environment: staging
+    timeout-minutes: 15
+    steps:
+      - name: Checkout ci-templates spine
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: TysonX-Teoranta/ci-templates
+          ref: main
+          path: .ci-templates
+
+      - name: Emit approved-release signal (cicd/promote.sh staging)
+        env:
+          CICD_SIGNAL_DIR: ${{ github.workspace }}/signals
+        run: |
+          chmod +x .ci-templates/cicd/promote.sh .ci-templates/cicd/lib/*.sh
+          .ci-templates/cicd/promote.sh staging \
+            --domain "${{ inputs.domain }}" \
+            --ref "${{ inputs.ref }}" \
+            --artifact "${{ inputs.artifact }}" \
+            --signal-dir "$CICD_SIGNAL_DIR" -v
+          {
+            echo "## Approved-release signal (staging)"
+            echo '```json'
+            cat "$CICD_SIGNAL_DIR/${{ inputs.domain }}-staging-release.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
