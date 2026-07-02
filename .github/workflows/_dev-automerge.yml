@@ -39,12 +39,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          pr_json=$(gh pr view "$PR" --repo "$REPO" --json title,baseRefName,isDraft,mergeable,state)
+          pr_json=$(gh pr view "$PR" --repo "$REPO" --json title,baseRefName,isDraft,mergeable,state,headRefOid)
           title=$(jq -r .title <<<"$pr_json")
           base=$(jq -r .baseRefName <<<"$pr_json")
           draft=$(jq -r .isDraft <<<"$pr_json")
           mergeable=$(jq -r .mergeable <<<"$pr_json")
           state=$(jq -r .state <<<"$pr_json")
+          head_sha=$(jq -r .headRefOid <<<"$pr_json")
 
           echo "PR #$PR: title='$title' base='$base' draft=$draft mergeable=$mergeable state=$state"
 
@@ -74,29 +75,32 @@ jobs:
             exit 0
           fi
 
-          # The Checks/statusCheckRollup API lags the workflow_run completion event by
-          # a few seconds (observed live, C178289477824693 proof run 28594360752: fired
-          # at 13:37:28Z, still returned zero checks at 13:37:30Z though the triggering
-          # run had already completed). Poll with backoff instead of judging on the
-          # very first read, or a same-second race skips a legitimately green PR.
-          total_checks=0 not_passing=1
+          # `gh pr checks` reads the GraphQL statusCheckRollup, which lags the
+          # workflow_run completion event unpredictably (observed live,
+          # C178289477824693 proof: a 10x/6s=60s retry against it still read zero
+          # checks minutes after both checks had actually gone green). The REST
+          # check-runs API (queried by exact head SHA, not the PR's rollup) reflects
+          # each check the instant it posts its conclusion — same surface GitHub
+          # itself uses to render the PR checks tab — so read that directly instead.
+          total_checks=0 not_done=1 not_success=1
           for attempt in $(seq 1 10); do
-            checks_json=$(gh pr checks "$PR" --repo "$REPO" --json state,bucket 2>/dev/null || echo "[]")
-            total_checks=$(jq -r 'length' <<<"$checks_json")
-            not_passing=$(jq -r '[.[] | select(.bucket != "pass")] | length' <<<"$checks_json")
-            if [ "$total_checks" != "0" ] && [ "$not_passing" = "0" ]; then
+            runs_json=$(gh api "repos/${REPO}/commits/${head_sha}/check-runs" --paginate --jq '.check_runs' 2>/dev/null || echo "[]")
+            total_checks=$(jq -r 'length' <<<"$runs_json")
+            not_done=$(jq -r '[.[] | select(.status != "completed")] | length' <<<"$runs_json")
+            not_success=$(jq -r '[.[] | select(.conclusion != "success")] | length' <<<"$runs_json")
+            if [ "$total_checks" != "0" ] && [ "$not_done" = "0" ] && [ "$not_success" = "0" ]; then
               break
             fi
-            echo "attempt $attempt/10: total_checks=$total_checks not_passing=$not_passing — retrying in 6s"
-            sleep 6
+            echo "attempt $attempt/10: total_checks=$total_checks not_done=$not_done not_success=$not_success — retrying in 8s"
+            sleep 8
           done
 
           if [ "$total_checks" = "0" ]; then
-            echo "SKIP: no checks reported after 10 retries (~60s) — nothing to gate on."
+            echo "SKIP: no check-runs reported after 10 retries (~80s) — nothing to gate on."
             exit 0
           fi
-          if [ "$not_passing" != "0" ]; then
-            echo "SKIP: $not_passing check(s) still not passing after 10 retries (~60s)."
+          if [ "$not_done" != "0" ] || [ "$not_success" != "0" ]; then
+            echo "SKIP: $not_done not-completed / $not_success not-success check-run(s) after 10 retries (~80s)."
             exit 0
           fi
 
