@@ -1,0 +1,124 @@
+# _checks-zero-tolerance.yml — CICD v2 step 3 (C178289477824693)
+# Reusable dev-stage zero-tolerance gate. THIN YAML over the FAT bash spine: the
+# code-quality verdict (dotnet build with CS/IDE/CA/SA incl. CS1591 as hard errors,
+# plus the comment-density heuristic) is produced by ONE entry point — cicd/checks.sh
+# — driven by the central domains.yml registry, so per-repo gate copies cannot drift.
+# The YAML only wires triggers, checks out code, runs tests for coverage, and calls
+# the deterministic bash checks (diff-coverage, retry-tracker). Zero AI at runtime.
+#
+# Called by a domain repo`s own thin ci.yml via workflow_call, on pull_request only
+# (retry-tracker needs a PR). NOT YET WIRED to any domain repo — scaffold only.
+# Wiring into lodgers needs the day-1 whole-repo cleanup pass first (PLAN.md step 2).
+
+on:
+  workflow_call:
+    inputs:
+      domain:
+        description: "domains.yml key (e.g. lodgers) — selects the app project/dirs/base the gate builds"
+        required: true
+        type: string
+      test_project:
+        description: "test project/solution to run for coverage; empty = skip test+diff-coverage for this domain"
+        required: false
+        type: string
+        default: ""
+      scope:
+        description: "'diff' (changed .cs vs the domain dev_base) or 'whole' (day-1 cleanup)"
+        required: false
+        type: string
+        default: diff
+      min_comment_ratio:
+        description: "comment/code floor for the advisory comment-density check"
+        required: false
+        type: number
+        default: 0.10
+      min_diff_coverage:
+        required: false
+        type: number
+        default: 80
+      retry_limit:
+        required: false
+        type: number
+        default: 10
+      strict_density:
+        description: "make comment-density findings gate-failing (default: advisory, non-blocking)"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  zero-tolerance:
+    if: github.event_name == 'pull_request'
+    runs-on: [self-hosted, tysonx-dev]
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout product repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      # The spine (checks.sh + lib/*.sh + domains.yml) is versioned in ci-templates.
+      # Pin to main: the feature branch that introduced these scripts is deleted after
+      # merge, so a self-referential feature-branch ref would break every caller. When
+      # a v1 release branch/tag is cut, track that instead.
+      - name: Checkout ci-templates spine
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: TysonX-Teoranta/ci-templates
+          ref: main
+          path: .ci-templates
+
+      - name: Zero-tolerance code-quality gate (checks.sh — build + analyzers + comment-density)
+        id: gate
+        env:
+          CICD_MIN_COMMENT_RATIO: ${{ inputs.min_comment_ratio }}
+        run: |
+          chmod +x .ci-templates/cicd/checks.sh .ci-templates/cicd/lib/*.sh
+          args=(--domain "${{ inputs.domain }}" --repo-root "$GITHUB_WORKSPACE" \
+                --scope "${{ inputs.scope }}" --base "origin/${{ github.base_ref }}")
+          [ "${{ inputs.strict_density }}" = "true" ] && args+=(--strict-density)
+          .ci-templates/cicd/checks.sh "${args[@]}"
+
+      - name: Test + coverage
+        id: test
+        if: inputs.test_project != ''
+        run: |
+          dotnet test "${{ inputs.test_project }}" \
+            --collect:"XPlat Code Coverage" --results-directory ./coverage \
+            2>&1 | tee test-report.txt
+          test "${PIPESTATUS[0]}" -eq 0
+
+      - name: Diff-coverage gate (>= min_diff_coverage% of changed lines)
+        id: diffcov
+        if: inputs.test_project != ''
+        run: |
+          COBERTURA=$(find ./coverage -name "coverage.cobertura.xml" | head -1)
+          .ci-templates/cicd/lib/diff-coverage.sh --cobertura "$COBERTURA" \
+            --min "${{ inputs.min_diff_coverage }}" --base "origin/${{ github.base_ref }}" -v
+
+      - name: Attach failure report
+        if: failure()
+        run: |
+          echo "## Zero-tolerance gate failed" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          { tail -100 .ci-templates/cicd/reports/findings.txt 2>/dev/null; \
+            tail -100 test-report.txt 2>/dev/null; } >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retry-tracker — record result, elevate at limit
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RESULT="fail"
+          if [ "${{ steps.gate.outcome }}" = "success" ] && \
+             [ "${{ steps.test.outcome }}" != "failure" ] && \
+             [ "${{ steps.diffcov.outcome }}" != "failure" ]; then
+            RESULT="pass"
+          fi
+          .ci-templates/cicd/lib/retry-tracker.sh --pr "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" --result "$RESULT" --limit "${{ inputs.retry_limit }}" -v

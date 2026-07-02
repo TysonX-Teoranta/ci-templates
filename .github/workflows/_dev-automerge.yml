@@ -1,0 +1,90 @@
+# _dev-automerge.yml — TysonX-Teoranta CI/CD reusable: deterministic, zero-AI-at-runtime
+# auto-merge for dev-branch PRs (contract C178289477824693).
+#
+# Called by each domain repo's own workflow_run-triggered caller (see dev-automerge.yml
+# in lodgers/tysonx/kukuln) once that repo's real CI workflow completes. Never invoked
+# directly on pull_request — a PR-triggered job cannot safely await its own check list
+# (it would be waiting on itself), so activation is deliberately routed through the CI
+# workflow's completion event instead.
+#
+# Hard floor (never merges): non-open PRs, drafts, Release/Promote-titled PRs (TOTP/human
+# promotion gates), any base branch that isn't literally *-dev (ALLOWLIST, not a
+# staging/live denylist — a PR targeting main or anything else is out of scope by
+# default), unmergeable (conflicted) PRs, PRs with any check not yet passing. No
+# branch-protection dependency — this job IS the gate.
+name: _dev-automerge
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: 'Pull request number to evaluate for auto-merge'
+        required: true
+        type: number
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    name: Auto-merge if green and in-scope
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate and merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+
+          pr_json=$(gh pr view "$PR" --repo "$REPO" --json title,baseRefName,isDraft,mergeable,state)
+          title=$(jq -r .title <<<"$pr_json")
+          base=$(jq -r .baseRefName <<<"$pr_json")
+          draft=$(jq -r .isDraft <<<"$pr_json")
+          mergeable=$(jq -r .mergeable <<<"$pr_json")
+          state=$(jq -r .state <<<"$pr_json")
+
+          echo "PR #$PR: title='$title' base='$base' draft=$draft mergeable=$mergeable state=$state"
+
+          if [ "$state" != "OPEN" ]; then
+            echo "SKIP: PR is not open ($state)."
+            exit 0
+          fi
+          if [ "$draft" = "true" ]; then
+            echo "SKIP: draft PR."
+            exit 0
+          fi
+          if printf '%s' "$title" | grep -qiE 'release|promote'; then
+            echo "SKIP: Release/Promote-titled PR — human/TOTP gate, never auto-merged."
+            exit 0
+          fi
+          case "$base" in
+            *-dev)
+              : # in-scope dev branch — continue
+              ;;
+            *)
+              echo "SKIP: base branch ($base) is not a *-dev branch — allowlist, not denylist (never auto-merge to main/staging/live/anything else by default)."
+              exit 0
+              ;;
+          esac
+          if [ "$mergeable" != "MERGEABLE" ]; then
+            echo "FLAG (not forced): PR is not cleanly mergeable (mergeable=$mergeable) — likely a conflict. Leaving for manual resolution."
+            exit 0
+          fi
+
+          checks_json=$(gh pr checks "$PR" --repo "$REPO" --json state,bucket 2>/dev/null || echo "[]")
+          not_passing=$(jq -r '[.[] | select(.bucket != "pass")] | length' <<<"$checks_json")
+          if [ "$not_passing" != "0" ]; then
+            echo "SKIP: $not_passing check(s) not passing yet."
+            exit 0
+          fi
+          total_checks=$(jq -r 'length' <<<"$checks_json")
+          if [ "$total_checks" = "0" ]; then
+            echo "SKIP: no checks reported yet — nothing to gate on."
+            exit 0
+          fi
+
+          echo "All conditions met (open, non-draft, non-release/promote, dev-branch base, mergeable, $total_checks/$total_checks checks passing) — merging PR #$PR."
+          gh pr merge "$PR" --repo "$REPO" --squash --delete-branch=false

@@ -1,0 +1,44 @@
+# domains.yml — CICD v2 central domain registry (contract C178289477824693).
+#
+# One entry per product repo. The bash spine (cicd/checks.sh via cicd/lib/common.sh)
+# reads this file to run the SAME deterministic, zero-AI gate across every domain
+# without per-repo copies drifting apart. Keep it to flat 2-space-indented scalar
+# fields under each domain so the awk reader in common.sh can parse it (no yq needed).
+#
+# Fields:
+#   repo         org/name of the product repository
+#   solution     .sln in the repo (reference; the gate builds app_project, not the sln)
+#   app_project  entry .csproj the gate compiles (transitive refs only) ("" = TBD)
+#   app_dirs     space-separated app (non-test) source roots — diff-scope filter +
+#                comment-density sweep; tests are excluded from zero-tolerance ("" = TBD)
+#   dev_base     git ref the diff-scope gate compares against ("" = TBD)
+#   status       active | on-hold | stub  (advisory; gate skips non-active by default)
+#
+# The gate does NOT store where each repo is checked out — that is environment-specific.
+# Point it at the product working tree with `checks.sh --repo-root <path>` (or the
+# CICD_REPO_ROOT env). The gate never guesses a path.
+
+version: 1
+
+domains:
+  lodgers:
+    repo: TysonX-Teoranta/lodgers
+    solution: lodgers.sln
+    app_project: LodgersSite/LodgersSite.csproj
+    app_dirs: "LodgersSite LodgersSite.Client LodgersSite.Shared"
+    dev_base: origin/lodgers-dev
+    status: active
+  kukuln:
+    repo: TysonX-Teoranta/kukuln
+    solution: ""
+    app_project: ""
+    app_dirs: ""
+    dev_base: ""
+    status: on-hold
+  tysonx:
+    repo: TysonX-Teoranta/tysonx
+    solution: ""
+    app_project: ""
+    app_dirs: ""
+    dev_base: ""
+    status: stub
