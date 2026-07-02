@@ -7,8 +7,8 @@
 # the deterministic bash checks (diff-coverage, retry-tracker). Zero AI at runtime.
 #
 # Called by a domain repo`s own thin ci.yml via workflow_call, on pull_request only
-# (retry-tracker needs a PR). NOT YET WIRED to any domain repo — scaffold only.
-# Wiring into lodgers needs the day-1 whole-repo cleanup pass first (PLAN.md step 2).
+# (retry-tracker needs a PR). Wired live into lodgers (checks.yml + dev-automerge.yml,
+# merged lodgers#280). kukuln/tysonx remain on-hold/stub in domains.yml until active.
 
 on:
   workflow_call:
@@ -105,8 +105,8 @@ jobs:
         run: |
           echo "## Zero-tolerance gate failed" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          { tail -100 .ci-templates/cicd/reports/findings.txt 2>/dev/null; \
-            tail -100 test-report.txt 2>/dev/null; } >> "$GITHUB_STEP_SUMMARY"
+          { tail -100 .ci-templates/cicd/reports/findings.txt 2>/dev/null || true; \
+            tail -100 test-report.txt 2>/dev/null || true; } >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Retry-tracker — record result, elevate at limit
