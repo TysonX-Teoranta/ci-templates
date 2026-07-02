@@ -74,15 +74,29 @@ jobs:
             exit 0
           fi
 
-          checks_json=$(gh pr checks "$PR" --repo "$REPO" --json state,bucket 2>/dev/null || echo "[]")
-          not_passing=$(jq -r '[.[] | select(.bucket != "pass")] | length' <<<"$checks_json")
-          if [ "$not_passing" != "0" ]; then
-            echo "SKIP: $not_passing check(s) not passing yet."
+          # The Checks/statusCheckRollup API lags the workflow_run completion event by
+          # a few seconds (observed live, C178289477824693 proof run 28594360752: fired
+          # at 13:37:28Z, still returned zero checks at 13:37:30Z though the triggering
+          # run had already completed). Poll with backoff instead of judging on the
+          # very first read, or a same-second race skips a legitimately green PR.
+          total_checks=0 not_passing=1
+          for attempt in $(seq 1 10); do
+            checks_json=$(gh pr checks "$PR" --repo "$REPO" --json state,bucket 2>/dev/null || echo "[]")
+            total_checks=$(jq -r 'length' <<<"$checks_json")
+            not_passing=$(jq -r '[.[] | select(.bucket != "pass")] | length' <<<"$checks_json")
+            if [ "$total_checks" != "0" ] && [ "$not_passing" = "0" ]; then
+              break
+            fi
+            echo "attempt $attempt/10: total_checks=$total_checks not_passing=$not_passing — retrying in 6s"
+            sleep 6
+          done
+
+          if [ "$total_checks" = "0" ]; then
+            echo "SKIP: no checks reported after 10 retries (~60s) — nothing to gate on."
             exit 0
           fi
-          total_checks=$(jq -r 'length' <<<"$checks_json")
-          if [ "$total_checks" = "0" ]; then
-            echo "SKIP: no checks reported yet — nothing to gate on."
+          if [ "$not_passing" != "0" ]; then
+            echo "SKIP: $not_passing check(s) still not passing after 10 retries (~60s)."
             exit 0
           fi
 
