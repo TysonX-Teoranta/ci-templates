@@ -1,23 +1,13 @@
 #!/usr/bin/env bash
 # common.sh — shared helpers for the central CICD v2 spine (contract C178289477824693).
-#
-# Sourced by every cicd/*.sh script in the central tysonx-cicd repo. Holds strict-mode
-# setup, logging, dry-run plumbing, and a minimal domains.yml registry reader. No side
-# effects on source beyond defining functions and a couple of readonly-ish globals.
-#
-# Fleet-V3 standard: strict mode, header, -v verbose, --dry-run, offline-testable
-# (no GitHub required). Deterministic + zero-AI at runtime.
-#
-# Design (PLAN.md step 3): the spine is the deterministic, zero-AI logic; YAML only
-# wires triggers/gates and calls these scripts, so CI can be swapped without touching
-# logic. This is a Phase 1 SKELETON — the registry reader is intentionally a tiny awk
-# parser (no yq dependency); swap it for yq later without changing the schema or callers.
+# Sourced by every cicd/*.sh script: strict mode, logging, dry-run plumbing, and a
+# flat domains.yml registry reader (awk-based, no yq dependency).
+# Fleet V3: strict mode, header, -v verbose, --dry-run, offline-testable.
 
-# Guard against double-sourcing.
+# Guard against double-sourcing. The exit is the fallback for direct execution
+# (return fails outside a sourced context); shellcheck's unreachable warning here
+# is a false positive.
 if [ -n "${_CICD_COMMON_SOURCED:-}" ]; then
-  # This file is meant to be sourced; the exit is the fallback when it is run
-  # directly (return then fails), so shellcheck's unreachable warning is a false
-  # positive here.
   # shellcheck disable=SC2317
   return 0 2>/dev/null || exit 0
 fi
@@ -64,15 +54,12 @@ run() {
 # --- Small helpers -----------------------------------------------------------
 # have <cmd> — true if command is on PATH.
 have() { command -v "$1" >/dev/null 2>&1; }
-
 # require <cmd> — die if a needed tool is missing.
 require() { have "$1" || die "required tool not found on PATH: $1" 3; }
 
-# --- Registry reader (minimal; Phase 1 stub, no yq) --------------------------
-# The registry is flat: `domains:` at column 0, each domain key at 2 spaces, and
-# each scalar field at 4 spaces as `key: value`. Values may be double-quoted; the
-# reader strips surrounding quotes. This is deliberately small — replace with yq
-# once it is available on the runners, keeping the same schema.
+# --- Registry reader ---------------------------------------------------------
+# Flat schema: `domains:` at column 0, each domain key at 2 spaces, each scalar
+# field at 4 spaces as `key: value`. Surrounding double-quotes are stripped.
 
 # registry_file — echo the resolved registry path (die if missing).
 registry_file() {

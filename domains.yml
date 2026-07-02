@@ -2,11 +2,8 @@
 #
 # One entry per product repo. The bash spine (cicd/checks.sh via cicd/lib/common.sh)
 # reads this file to run the SAME deterministic, zero-AI gate across every domain
-# without per-repo copies drifting apart.
-#
-# Consumers are native GH-Actions/bash only; keep this to flat 2-space-indented
-# scalar fields under each domain so the minimal awk reader in common.sh can parse
-# it without a yq dependency. When yq lands, the schema stays the same.
+# without per-repo copies drifting apart. Keep it to flat 2-space-indented scalar
+# fields under each domain so the awk reader in common.sh can parse it (no yq needed).
 #
 # Fields:
 #   repo         org/name of the product repository
@@ -19,8 +16,7 @@
 #
 # The gate does NOT store where each repo is checked out — that is environment-specific.
 # Point it at the product working tree with `checks.sh --repo-root <path>` (or the
-# CICD_REPO_ROOT env). In GitHub Actions the workflow checks out the product repo and
-# passes --repo-root; the gate never guesses a path.
+# CICD_REPO_ROOT env). The gate never guesses a path.
 
 version: 1
 

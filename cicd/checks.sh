@@ -1,62 +1,36 @@
 #!/usr/bin/env bash
 # checks.sh — central CICD v2 zero-tolerance gate (contract C178289477824693).
-#
-# PLAN.md step 3, central spine: run the SAME deterministic, zero-AI code-quality
-# gate across every domain in domains.yml. One entry point, driven by --domain, so
-# per-repo gate copies cannot drift apart. This is the REAL gate (Phase 1b): it runs
-# an actual `dotnet build` with the frozen zero-tolerance analyzer posture (Roslyn
-# IDE/CA/SA/CS incl. CS1591) over the resolved domain's APP code and fails on ANY
-# in-scope analyzer finding. It is a generalisation of the single-domain reference
-# gate (lodgers-ai/cicd/checks.sh) onto the central registry.
-#
-# What the gate builds: ONLY the domain's app entry project (registry app_project),
-# which transitively compiles its project references (e.g. .Client + .Shared) so
-# their analyzers run too. Test projects are intentionally NOT built — nothing in
-# the app graph references them, so building the whole .sln would (a) inflate counts
-# with out-of-scope test findings and (b) under warnings-as-errors turn every test
-# warning into a hard build error, masking the app verdict. Generated code (obj/bin,
-# EF Migrations, *.Designer.cs, *.g.cs, *ModelSnapshot.cs) is excluded from both the
-# analyzer parse and the comment-density check — it is not hand-maintained.
-#
-# Where the app code lives: the central spine lives in tysonx-core, but the product
-# code is a SEPARATE checkout. Point the gate at it with --repo-root <path> (or the
-# CICD_REPO_ROOT env). In GitHub Actions the workflow checks out the product repo and
-# passes --repo-root. The gate never guesses a path — an unset root is a usage error,
-# never a silent pass.
-#
-# NuGet audit (NU19xx) is a SECURITY concern owned by security-scan + the reviewed
-# <NuGetAuditSuppress> list, NOT the code-quality gate — kept OFF here (NuGetAudit=false)
-# and NU* excluded from the finding parse, so a newly-disclosed CVE cannot mask code
-# findings. Comment-density is a custom heuristic, ADVISORY by default (reported, not
-# blocking); --strict-density makes it fail the gate.
-#
-# Native GH-Actions + bash, ZERO AI at runtime. The only AI in the loop is the code
-# fix an orchestrator dispatches AFTER a finding — never inside a check.
-#
-# Scope modes:
-#   --scope diff   (default) analyse only files changed vs the domain's dev_base
-#   --scope whole  analyse all app code (day-1 one-off whole-repo cleanup)
-#
-# Run modes:
-#   --gate     (default) warnings-as-errors; non-zero exit on ANY in-scope finding
-#   --measure  tally + report all findings; ALWAYS exit 0 (size the cleanup)
-#   --strict-density  treat comment-density findings as gate-failing (default: advisory)
-#
-# Usage:
-#   cicd/checks.sh --domain <name> --repo-root <product-checkout>
-#                  [--scope diff|whole] [--gate|--measure] [--strict-density]
-#                  [--base <ref>] [--report-dir <dir>] [--config Debug|Release]
-#                  [-v] [--dry-run]
-#   cicd/checks.sh --list            # list registered domains and exit
-#
-# Exit codes:
-#   0  clean (or --measure, --list, --dry-run, or non-active/vacuous scope)
-#   1  findings present (--gate)
-#   2  usage error (incl. --repo-root unset for an active domain)
-#   3  missing tool (dotnet/git)
+# One entry point, driven by --domain against domains.yml, so per-repo gate copies
+# cannot drift. Runs a real `dotnet build` under a frozen zero-tolerance analyzer
+# posture (Roslyn IDE/CA/SA/CS incl. CS1591) over the domain's app project and fails
+# on any in-scope finding. Native GH-Actions + bash, zero AI at runtime.
+# Fleet V3: strict mode, -v verbose, --dry-run, offline-testable via selftest.sh.
 
 # shellcheck source=lib/common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+
+show_help() {
+  cat <<'EOF'
+checks.sh — central CICD v2 zero-tolerance gate.
+
+Usage:
+  checks.sh --domain <name> --repo-root <product-checkout>
+            [--scope diff|whole] [--gate|--measure] [--strict-density]
+            [--base <ref>] [--report-dir <dir>] [--config Debug|Release]
+            [-v] [--dry-run]
+  checks.sh --list      list registered domains and exit
+
+Scope:  diff  (default) only files changed vs the domain's dev_base
+        whole all app code (one-off whole-repo cleanup)
+Mode:   --gate    (default) warnings-as-errors; non-zero exit on any finding
+        --measure tally + report all findings; always exit 0
+        --strict-density  make comment-density findings gate-failing (default: advisory)
+
+Exit: 0 clean/measure/list/dry-run/vacuous · 1 findings · 2 usage · 3 missing tool
+EOF
+}
+usage() { [ "${1:-2}" = "0" ] && { show_help; exit 0; }
+          err "see --help for usage"; exit "${1:-2}"; }
 
 # --- Defaults ----------------------------------------------------------------
 DOMAIN=""
@@ -68,12 +42,6 @@ REPO_ROOT_ARG="${CICD_REPO_ROOT:-}"
 CONFIG="Debug"
 REPORT_DIR="$CICD_ROOT/reports"
 LIST_ONLY=0
-
-# help — print the header comment block (everything up to the first blank line
-# after the shebang). Robust to edits, unlike a hard-coded line range.
-show_help() { tail -n +2 "$0" | sed -n '/^#/{s/^#\{1,2\} \{0,1\}//;p;}'; }
-usage() { [ "${1:-2}" = "0" ] && { show_help; exit 0; }
-          err "see --help for usage"; exit "${1:-2}"; }
 
 # --- Arg parse ---------------------------------------------------------------
 while [ $# -gt 0 ]; do
@@ -145,7 +113,7 @@ BUILD_TARGET="$DOMAIN_ROOT/$APP_PROJECT"
 #   EnforceCodeStyleInBuild=true     IDE* style rules run in build
 #   AnalysisMode=All / Level=latest  full CA/SA analyzer set
 #   NuGetAudit=false                 dependency-vuln audit (NU19xx) is security-owned,
-#                                    kept out of the code gate (see header).
+#                                    kept out of the code gate.
 # TreatWarningsAsErrors is toggled per run-mode below.
 ZEROTOL_PROPS=(
   /p:NoWarn=
@@ -223,7 +191,6 @@ BUILD_RC=$?
 # non-zero (e.g. a grep/sed that legitimately matches nothing).
 
 # --- Parse diagnostics into structured findings ------------------------------
-# MSBuild diagnostic shape: <path>(<line>,<col>): <sev> <RULE>: <msg> [<proj>].
 # NU19xx (security-reviewed) + generated code are dropped inside parse-diagnostics.sh.
 "$CICD_ROOT/lib/parse-diagnostics.sh" "$RAW_LOG" "$SCOPE" "$MODE" \
   "$FINDINGS_JSON" "$FINDINGS_TXT" "${IN_SCOPE_FILES[@]}"
