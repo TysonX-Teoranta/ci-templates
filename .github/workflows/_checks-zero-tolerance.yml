@@ -88,8 +88,12 @@ jobs:
         if: inputs.test_project != ''
         timeout-minutes: 15
         run: |
+          # ISOLATION TEST (C178289477824693): --collect:"XPlat Code Coverage" hung
+          # twice in a row on this ARM64 self-hosted runner (runs 28599505994,
+          # 28600866064 — 8min blame-hang-timeout fired with zero test progress both
+          # times). Dropping the coverage collector here to prove/disprove it's the
+          # actual hang source before committing to a real fix.
           dotnet test "${{ inputs.test_project }}" \
-            --collect:"XPlat Code Coverage" --results-directory ./coverage \
             --blame-hang-timeout 8m --blame-hang-dump-type mini \
             --diag ./coverage/diag.log \
             2>&1 | tee test-report.txt
