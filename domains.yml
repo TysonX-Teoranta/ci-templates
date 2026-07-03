@@ -42,3 +42,14 @@ domains:
     app_dirs: ""
     dev_base: ""
     status: stub
+  tysonx-core:
+    # pulseai's own repo. No-dotnet domain: app_project stays empty on purpose —
+    # the gate skips the build/analyzer pass and hard-gates everything else
+    # (.sh shellcheck, .json/.xml/.yml validity+hygiene, .md fences) so pulseai
+    # output MUST pass CICD before it reaches Crom.
+    repo: TysonX-Teoranta/tysonx-core
+    solution: ""
+    app_project: ""
+    app_dirs: "agents ai-command dev live ops to-laptop"
+    dev_base: origin/main
+    status: active
