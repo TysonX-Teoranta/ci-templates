@@ -97,17 +97,24 @@ if [ "$STATUS" != "active" ]; then
   exit 0
 fi
 
-# A wired, active domain needs a solution + app project + app_dirs to build.
-[ -n "$SOLUTION" ]     || die "domain '$DOMAIN' active but 'solution' unset in registry" 2
-[ -n "$APP_PROJECT" ]  || die "domain '$DOMAIN' active but 'app_project' unset in registry" 2
+# A wired, active domain always needs app_dirs. solution/app_project are optional:
+# empty app_project = a no-dotnet domain (shell/config repos like tysonx-core) —
+# the dotnet build + analyzer pass is skipped, every other check still gates.
 [ -n "$APP_DIRS_RAW" ] || die "domain '$DOMAIN' active but 'app_dirs' unset in registry" 2
 read -r -a APP_DIRS <<< "$APP_DIRS_RAW"
+if [ -n "$APP_PROJECT" ]; then
+  [ -n "$SOLUTION" ] || die "domain '$DOMAIN' has app_project but 'solution' unset in registry" 2
+else
+  log "no-dotnet domain (app_project empty) — skipping build/analyzer pass"
+fi
 
 # --- Resolve the product-repo checkout (never guessed) -----------------------
 [ -n "$REPO_ROOT_ARG" ] || die "product checkout not set: pass --repo-root <path> (or CICD_REPO_ROOT) pointing at the '$DOMAIN' repo working tree" 2
 DOMAIN_ROOT="$(cd "$REPO_ROOT_ARG" 2>/dev/null && pwd)" || die "--repo-root does not exist: $REPO_ROOT_ARG" 2
-BUILD_TARGET="$DOMAIN_ROOT/$APP_PROJECT"
-[ -f "$BUILD_TARGET" ] || die "app project not found under checkout: $BUILD_TARGET (wrong --repo-root for domain '$DOMAIN'?)" 2
+if [ -n "$APP_PROJECT" ]; then
+  BUILD_TARGET="$DOMAIN_ROOT/$APP_PROJECT"
+  [ -f "$BUILD_TARGET" ] || die "app project not found under checkout: $BUILD_TARGET (wrong --repo-root for domain '$DOMAIN'?)" 2
+fi
 
 # Zero-tolerance MSBuild posture as explicit global properties so the committed dev
 # config (warning-tolerant) is untouched and the gate stays reversible + self-contained:
@@ -127,7 +134,7 @@ ZEROTOL_PROPS=(
   /p:AnalysisLevel=latest
 )
 
-require dotnet
+[ -n "$APP_PROJECT" ] && require dotnet
 require git
 require jq
 
@@ -182,28 +189,38 @@ else
   TWAE=(/p:TreatWarningsAsErrors=true)
 fi
 
-log "restoring app project…"
-run dotnet restore "$BUILD_TARGET" /p:NuGetAudit=false >/dev/null 2>&1 || warn "restore reported issues (continuing)"
+if [ -n "$APP_PROJECT" ]; then
+  log "restoring app project…"
+  run dotnet restore "$BUILD_TARGET" /p:NuGetAudit=false >/dev/null 2>&1 || warn "restore reported issues (continuing)"
 
-log "building with zero-tolerance analyzers (this is the slow step)…"
-# --no-incremental forces a full recompile of the target + its references so analyzer
-# diagnostics ALWAYS emit — an incremental build on a warm tree skips up-to-date
-# projects and would silently report zero findings, breaking determinism.
-set +e
-run dotnet build "$BUILD_TARGET" -c "$CONFIG" --no-restore --no-incremental -v quiet -clp:NoSummary \
-  "${ZEROTOL_PROPS[@]}" "${TWAE[@]}" > "$RAW_LOG" 2>&1
-BUILD_RC=$?
-# NB: common.sh runs `set -uo pipefail` (no -e). We do NOT re-enable -e here — the
-# rest of the script checks return codes explicitly and must not abort on the first
-# non-zero (e.g. a grep/sed that legitimately matches nothing).
+  log "building with zero-tolerance analyzers (this is the slow step)…"
+  # --no-incremental forces a full recompile of the target + its references so analyzer
+  # diagnostics ALWAYS emit — an incremental build on a warm tree skips up-to-date
+  # projects and would silently report zero findings, breaking determinism.
+  set +e
+  run dotnet build "$BUILD_TARGET" -c "$CONFIG" --no-restore --no-incremental -v quiet -clp:NoSummary \
+    "${ZEROTOL_PROPS[@]}" "${TWAE[@]}" > "$RAW_LOG" 2>&1
+  BUILD_RC=$?
+  # NB: common.sh runs `set -uo pipefail` (no -e). We do NOT re-enable -e here — the
+  # rest of the script checks return codes explicitly and must not abort on the first
+  # non-zero (e.g. a grep/sed that legitimately matches nothing).
 
-# --- Parse diagnostics into structured findings ------------------------------
-# NU19xx (security-reviewed) + generated code are dropped inside parse-diagnostics.sh.
-"$CICD_ROOT/lib/parse-diagnostics.sh" "$RAW_LOG" "$SCOPE" "$MODE" \
-  "$FINDINGS_JSON" "$FINDINGS_TXT" "${IN_SCOPE_FILES[@]}"
+  # --- Parse diagnostics into structured findings ----------------------------
+  # NU19xx (security-reviewed) + generated code are dropped inside parse-diagnostics.sh.
+  "$CICD_ROOT/lib/parse-diagnostics.sh" "$RAW_LOG" "$SCOPE" "$MODE" \
+    "$FINDINGS_JSON" "$FINDINGS_TXT" "${IN_SCOPE_FILES[@]}"
 
-ANALYZER_COUNT=$(sed -n 's/.*"total_analyzer":\([0-9]*\).*/\1/p' "$FINDINGS_JSON" | head -1)
-ANALYZER_COUNT=${ANALYZER_COUNT:-0}
+  ANALYZER_COUNT=$(sed -n 's/.*"total_analyzer":\([0-9]*\).*/\1/p' "$FINDINGS_JSON" | head -1)
+  ANALYZER_COUNT=${ANALYZER_COUNT:-0}
+else
+  # No-dotnet domain: no build, no analyzer findings. Emit the report header so
+  # downstream consumers (findings.json artifact) always find a valid document.
+  BUILD_RC=0
+  ANALYZER_COUNT=0
+  printf '{"contract":"C178289477824693","scope":"%s","mode":"%s","total_analyzer":0,"findings":[]}\n' \
+    "$SCOPE" "$MODE" > "$FINDINGS_JSON"
+  : > "$FINDINGS_TXT"
+fi
 
 # --- Custom comment-density check -------------------------------------------
 DENSITY_FAILS=0
