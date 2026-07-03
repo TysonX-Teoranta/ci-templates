@@ -8,7 +8,9 @@
 # workflow's completion event instead.
 #
 # Hard floor (never merges): non-open PRs, drafts, Release/Promote-titled PRs (TOTP/human
-# promotion gates), any base branch that isn't literally *-dev (ALLOWLIST, not a
+# promotion gates), hold-titled PRs (WIP / HOLD / DO NOT MERGE — proven live: PR
+# lodgers#285 titled "DO NOT MERGE" was auto-merged before this filter existed),
+# any base branch that isn't literally *-dev (ALLOWLIST, not a
 # staging/live denylist — a PR targeting main or anything else is out of scope by
 # default), unmergeable (conflicted) PRs, PRs with any check not yet passing. No
 # branch-protection dependency — this job IS the gate.
@@ -59,6 +61,12 @@ jobs:
           fi
           if printf '%s' "$title" | grep -qiE 'release|promote'; then
             echo "SKIP: Release/Promote-titled PR — human/TOTP gate, never auto-merged."
+            exit 0
+          fi
+          # Human hold markers. Draft status is the primary hold; the title marker is a
+          # backstop so a plain-English "DO NOT MERGE" is honoured too (lodgers#285).
+          if printf '%s' "$title" | grep -qiE 'do[ _-]?not[ _-]?merge|\bwip\b|\bhold\b'; then
+            echo "SKIP: hold-titled PR (DO NOT MERGE / WIP / HOLD) — never auto-merged."
             exit 0
           fi
           case "$base" in

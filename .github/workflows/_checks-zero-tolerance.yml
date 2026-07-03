@@ -126,12 +126,20 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
+          GATE: ${{ steps.gate.outcome }}
+          TEST: ${{ steps.test.outcome }}
+          DIFFCOV: ${{ steps.diffcov.outcome }}
         run: |
-          RESULT="fail"
-          if [ "${{ steps.gate.outcome }}" = "success" ] && \
-             [ "${{ steps.test.outcome }}" != "failure" ] && \
-             [ "${{ steps.diffcov.outcome }}" != "failure" ]; then
+          # Record only real verdicts. If the gate never ran (checkout/setup died →
+          # outcome skipped/cancelled) there is no code verdict, and an infra death
+          # must not consume the rework budget toward step3-elevate.
+          if [ "$GATE" = "failure" ] || [ "$TEST" = "failure" ] || [ "$DIFFCOV" = "failure" ]; then
+            RESULT="fail"
+          elif [ "$GATE" = "success" ]; then
             RESULT="pass"
+          else
+            echo "retry-tracker: gate did not run (gate=$GATE) — infra failure, not recording."
+            exit 0
           fi
           .ci-templates/cicd/lib/retry-tracker.sh --pr "${{ github.event.pull_request.number }}" \
             --repo "${{ github.repository }}" --result "$RESULT" --limit "${{ inputs.retry_limit }}" -v
