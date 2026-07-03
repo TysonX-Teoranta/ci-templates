@@ -52,7 +52,10 @@ for line in diff.splitlines():
     if m and cur_file:
         start = int(m.group(1))
         count = int(m.group(2)) if m.group(2) else 1
-        for ln in range(start, start + max(count, 1)):
+        # A deletion-only hunk shows "+<line>,0" — zero lines exist on the new side,
+        # so there is nothing to demand coverage of. Counting max(count,1) here would
+        # gate one untouched line per deletion hunk.
+        for ln in range(start, start + count):
             changed[cur_file].add(ln)
 
 if not any(changed.values()):
