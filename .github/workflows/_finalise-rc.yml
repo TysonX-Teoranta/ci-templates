@@ -1,0 +1,100 @@
+# _finalise-rc.yml — reusable RC finalisation (artifact model).
+# THIN YAML over the FAT bash spine: all cut logic (version calc, scrub, hygiene,
+# build/test/publish, package, tag + prerelease) lives in cicd/rc/rc-finalise.sh,
+# driven by the central domains.yml registry. Zero AI at runtime.
+#
+# Dev is the only workbench: the artifact is built ONCE here on the dev runner;
+# staging/live only ever receive it. The notify job (pulse runner, mail stack)
+# sends the single "RC finalised" mail — an essential per the email policy.
+name: _finalise-rc
+on:
+  workflow_call:
+    inputs:
+      domain:
+        description: "domains.yml key (must be status: active)"
+        required: true
+        type: string
+      bump:
+        description: "rc | patch | minor | major"
+        required: false
+        type: string
+        default: rc
+      dry_run:
+        description: "build + prove hygiene only; no tag, no release, no mail"
+        required: false
+        type: boolean
+        default: false
+      runner_label:
+        description: "build runner label (the domain's dev box)"
+        required: false
+        type: string
+        default: tysonx-dev
+      pulse_runner_label:
+        description: "pulse runner label (mail stack lives there)"
+        required: false
+        type: string
+        default: tysonx-pulse
+
+jobs:
+  finalise:
+    name: Finalise RC (scrub + hygiene + build-once artifact)
+    runs-on: [self-hosted, "${{ inputs.runner_label }}"]
+    timeout-minutes: 60
+    permissions:
+      contents: write   # RC tag push + prerelease create
+    outputs:
+      rc_tag: ${{ steps.cut.outputs.rc_tag }}
+      version: ${{ steps.cut.outputs.version }}
+      artifact: ${{ steps.cut.outputs.artifact }}
+    steps:
+      - name: Verify authorized actor
+        if: github.actor != 'lodgings-ie'
+        run: exit 1
+
+      - name: Checkout product repo (full history + tags for version lineage)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Checkout ci-templates spine
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: TysonX-Teoranta/ci-templates
+          ref: main
+          path: .ci-templates
+
+      - name: Cut RC (rc-finalise.sh — fat spine)
+        id: cut
+        env:
+          DOMAIN: ${{ inputs.domain }}
+          BUMP: ${{ inputs.bump }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+          GH_TOKEN: ${{ github.token }}
+          # Per-run NuGet cache — MSB3030 concurrency fix, same as the old rc-cut lane.
+          NUGET_PACKAGES: ${{ runner.temp }}/nuget-${{ github.run_id }}
+        run: |
+          chmod +x .ci-templates/cicd/rc/rc-finalise.sh .ci-templates/cicd/lib/*.sh
+          CICD_REGISTRY=.ci-templates/domains.yml .ci-templates/cicd/rc/rc-finalise.sh
+
+  notify:
+    name: RC finalised notice (essential mail)
+    needs: finalise
+    if: ${{ success() && !inputs.dry_run }}
+    runs-on: [self-hosted, "${{ inputs.pulse_runner_label }}"]
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Send one mail via pulse sendmail
+        env:
+          DOMAIN: ${{ inputs.domain }}
+          TAG: ${{ needs.finalise.outputs.rc_tag }}
+        run: |
+          {
+            printf 'To: crom@tysonx.ie\n'
+            printf 'From: crom@tysonx.ie\n'
+            printf 'Auto-Submitted: auto-generated\n'
+            printf 'Subject: [RC] %s %s finalised — ready for staging promote\n\n' "$DOMAIN" "$TAG"
+            printf 'RC %s for %s is cut: live-ready by construction (scrubbed, zero-stub, hygiene-proven).\n' "$TAG" "$DOMAIN"
+            printf 'Artifact is on the GitHub prerelease. Promote when ready:\n'
+            printf '  cicd promote %s staging        (opens your TOTP gate)\n' "$DOMAIN"
+          } | /usr/sbin/sendmail -f crom@tysonx.ie -t

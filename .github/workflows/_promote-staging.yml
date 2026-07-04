@@ -1,0 +1,114 @@
+# _promote-staging.yml — reusable TOTP-human-gated promotion of a finalised RC
+# artifact to staging (artifact model: staging RECEIVES, never builds).
+#
+# Jobs (all on the pulse runner — hub-spoke: only pulse reaches staging):
+#   resolve — pin the RC tag + read its manifest (context for the gate alert)
+#   gate    — Crom TOTP via the pulse gate harness (gate-wait.sh); the TOTP IS the
+#             gate, no typed confirm phrase. Skippable ONLY for dry runs.
+#   stage   — download the release asset with the workflow token, sha256-verify,
+#             ship over the pulse→staging spoke, invoke the staging receiver.
+#             dry_run unpacks to a sandbox and never touches symlink/service.
+#   outcome — one mail on real promotes only (essential); ledger always.
+name: _promote-staging
+on:
+  workflow_call:
+    inputs:
+      domain:
+        description: "domains.yml key"
+        required: true
+        type: string
+      rc_tag:
+        description: "RC tag to promote (empty = latest finalised prerelease)"
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: "rehearsal: sandbox unpack on staging, no symlink/service change"
+        required: false
+        type: boolean
+        default: true
+      skip_gate:
+        description: "skip the TOTP gate — honoured ONLY when dry_run is true"
+        required: false
+        type: boolean
+        default: false
+      pulse_runner_label:
+        required: false
+        type: string
+        default: tysonx-pulse
+
+jobs:
+  resolve:
+    name: Resolve RC
+    runs-on: [self-hosted, "${{ inputs.pulse_runner_label }}"]
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      rc_tag: ${{ steps.r.outputs.rc_tag }}
+      context: ${{ steps.r.outputs.context }}
+    steps:
+      - name: Verify authorized actor
+        if: github.actor != 'lodgings-ie'
+        run: exit 1
+      - name: Resolve tag + manifest
+        id: r
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$HOME/tysonx-core/ops/cicd/promote-stage.sh" \
+            --domain "${{ inputs.domain }}" --repo "${{ github.repository }}" \
+            --rc-tag "${{ inputs.rc_tag }}" --resolve-only
+
+  gate:
+    name: TOTP gate — Crom approves staging promote
+    needs: resolve
+    # Real promotes ALWAYS gate; skip_gate is a dry-run-only convenience.
+    if: ${{ !(inputs.dry_run && inputs.skip_gate) }}
+    runs-on: [self-hosted, "${{ inputs.pulse_runner_label }}"]
+    timeout-minutes: 1500
+    permissions: {}
+    steps:
+      - name: Await Crom TOTP approval (promote → staging)
+        run: |
+          "$HOME/tysonx-core/ops/cicd/gate-wait.sh" \
+            "${{ inputs.domain }}" staging promote "${{ needs.resolve.outputs.context }}"
+
+  stage:
+    name: Ship artifact to staging receiver
+    needs: [resolve, gate]
+    if: >-
+      ${{ !cancelled() && needs.resolve.result == 'success' &&
+          (needs.gate.result == 'success' ||
+           (inputs.dry_run && inputs.skip_gate && needs.gate.result == 'skipped')) }}
+    runs-on: [self-hosted, "${{ inputs.pulse_runner_label }}"]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Download, verify, ship, receive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$HOME/tysonx-core/ops/cicd/promote-stage.sh" \
+            --domain "${{ inputs.domain }}" --repo "${{ github.repository }}" \
+            --rc-tag "${{ needs.resolve.outputs.rc_tag }}" \
+            ${{ inputs.dry_run && '--dry-run' || '' }}
+
+  outcome:
+    name: Outcome (ledger always, mail on real promotes)
+    needs: [resolve, gate, stage]
+    if: ${{ always() && !cancelled() }}
+    runs-on: [self-hosted, "${{ inputs.pulse_runner_label }}"]
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Record + notify
+        run: |
+          "$HOME/tysonx-core/ops/cicd/promote-notify.sh" \
+            --domain "${{ inputs.domain }}" \
+            --tag "${{ needs.resolve.outputs.rc_tag }}" \
+            --gate "${{ needs.gate.result }}" \
+            --stage "${{ needs.stage.result }}" \
+            --dry-run "${{ inputs.dry_run && '1' || '0' }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
