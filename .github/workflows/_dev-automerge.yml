@@ -14,6 +14,11 @@
 # staging/live denylist — a PR targeting main or anything else is out of scope by
 # default), unmergeable (conflicted) PRs, PRs with any check not yet passing. No
 # branch-protection dependency — this job IS the gate.
+#
+# Behind-base handling: a green PR whose head is behind its base (blocked by the
+# strict up-to-date protection rule) is brought up to date via the update-branch API
+# under AUTOMERGE_PAT; the re-run checks re-invoke this job, which then merges. No
+# human step anywhere on the green path.
 name: _dev-automerge
 
 on:
@@ -23,6 +28,15 @@ on:
         description: 'Pull request number to evaluate for auto-merge'
         required: true
         type: number
+    secrets:
+      AUTOMERGE_PAT:
+        description: >-
+          PAT with contents+pull-requests write, used ONLY for the update-branch call
+          when a green PR is behind its base. The built-in github.token cannot be used
+          there: events it causes never trigger workflows, so the re-run of checks on
+          the updated head would not fire and the PR would stall on the up-to-date
+          protection rule forever.
+        required: false
 
 permissions:
   contents: write
@@ -36,10 +50,23 @@ jobs:
       - name: Evaluate and merge
         env:
           GH_TOKEN: ${{ github.token }}
+          AUTOMERGE_PAT: ${{ secrets.AUTOMERGE_PAT }}
           REPO: ${{ github.repository }}
           PR: ${{ inputs.pr_number }}
         run: |
           set -euo pipefail
+
+          # Bring a green-but-behind PR up to date with its base. Must run under the
+          # PAT, not github.token (see the secret's description); the resulting
+          # synchronize event re-runs checks, whose completion re-invokes this job.
+          update_branch() {
+            if [ -z "${AUTOMERGE_PAT:-}" ]; then
+              echo "SKIP: PR is behind its base and no AUTOMERGE_PAT secret is available to update it — leaving for manual update."
+              return 0
+            fi
+            echo "PR #$PR is behind $base — updating the branch; checks re-run on the new head and automerge re-evaluates when they complete."
+            GH_TOKEN="$AUTOMERGE_PAT" gh api -X PUT "repos/${REPO}/pulls/${PR}/update-branch" >/dev/null
+          }
 
           pr_json=$(gh pr view "$PR" --repo "$REPO" --json title,baseRefName,isDraft,mergeable,state,headRefOid)
           title=$(jq -r .title <<<"$pr_json")
@@ -90,9 +117,13 @@ jobs:
           # check-runs API (queried by exact head SHA, not the PR's rollup) reflects
           # each check the instant it posts its conclusion — same surface GitHub
           # itself uses to render the PR checks tab — so read that directly instead.
+          # --paginate with --jq '.check_runs' emits one array PER PAGE (concatenated
+          # JSON docs, not one array) — downstream jq then mis-indexes and the counts
+          # go garbage (observed live: lodgers#292 read "0/3 checks passing" as green).
+          # Stream elements and re-slurp into a single array instead.
           total_checks=0 not_done=1 not_success=1
           for attempt in $(seq 1 10); do
-            runs_json=$(gh api "repos/${REPO}/commits/${head_sha}/check-runs" --paginate --jq '.check_runs' 2>/dev/null || echo "[]")
+            runs_json=$(gh api "repos/${REPO}/commits/${head_sha}/check-runs" --paginate --jq '.check_runs[]' 2>/dev/null | jq -s '.' || echo "[]")
             total_checks=$(jq -r 'length' <<<"$runs_json")
             not_done=$(jq -r '[.[] | select(.status != "completed")] | length' <<<"$runs_json")
             not_success=$(jq -r '[.[] | select(.conclusion != "success")] | length' <<<"$runs_json")
@@ -112,5 +143,25 @@ jobs:
             exit 0
           fi
 
+          # Green, but the up-to-date protection rule (strict checks) still blocks a
+          # merge when the head is behind its base — the exact halt seen live on
+          # lodgers#292. Update the branch and let the next checks cycle merge it.
+          merge_state=$(gh pr view "$PR" --repo "$REPO" --json mergeStateStatus --jq .mergeStateStatus)
+          if [ "$merge_state" = "BEHIND" ]; then
+            update_branch
+            exit 0
+          fi
+
           echo "All conditions met (open, non-draft, non-release/promote, dev-branch base, mergeable, $total_checks/$total_checks checks passing) — merging PR #$PR."
-          gh pr merge "$PR" --repo "$REPO" --squash --delete-branch=false
+          if ! gh pr merge "$PR" --repo "$REPO" --squash --delete-branch=false; then
+            # Base may have advanced between evaluation and merge (race). Re-read the
+            # state: if we merely fell behind, update the branch and let the next
+            # cycle merge; anything else is a genuine failure.
+            merge_state=$(gh pr view "$PR" --repo "$REPO" --json mergeStateStatus --jq .mergeStateStatus)
+            if [ "$merge_state" = "BEHIND" ]; then
+              update_branch
+              exit 0
+            fi
+            echo "Merge failed and PR is not merely behind (mergeStateStatus=$merge_state)."
+            exit 1
+          fi
