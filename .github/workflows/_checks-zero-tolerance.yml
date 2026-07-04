@@ -88,22 +88,52 @@ jobs:
         if: inputs.test_project != ''
         timeout-minutes: 15
         run: |
-          # coverlet's --collect:"XPlat Code Coverage" hung twice in a row on this
-          # ARM64 self-hosted runner (C178289477824693, runs 28599505994,
-          # 28600866064 — 8min blame-hang-timeout fired, zero test progress both
-          # times). Isolation test (run 28601979665) proved dotnet test itself
-          # completes fine in ~5min with the collector removed. Use Microsoft's
-          # standalone dotnet-coverage tool instead — it instruments out-of-process
-          # rather than hooking the test host in-process like coverlet's collector,
-          # avoiding whatever ARM64-specific interaction was hanging it.
+          # Coverage on this linux-arm64 self-hosted runner needs STATIC managed
+          # instrumentation. Both profiler-based collectors are broken here:
+          # coverlet's in-process collector hard-hangs the test host (runs
+          # 28599505994/28600866064), and dotnet-coverage's default DYNAMIC mode
+          # exits 0 but never attaches ("Profiler was not initialized") — it
+          # writes an EMPTY cobertura (<packages/>), silently scoring every code
+          # PR 0% diff-coverage (lodgers #294, runs 28705935323/28708127047).
+          # So: build once, rewrite the repo's product assemblies in the test
+          # output with `dotnet-coverage instrument`, run the tests --no-build
+          # under a collect session with the same session id (no profiler
+          # involved), and fail LOUDLY if the report ever comes back empty.
+          # Proven on this runner: the commit dynamic mode scored 0% scores 90.9%.
           dotnet tool install --global dotnet-coverage
           export PATH="$PATH:$HOME/.dotnet/tools"
           mkdir -p ./coverage
-          dotnet-coverage collect \
-            "dotnet test \"${{ inputs.test_project }}\" --blame-hang-timeout 8m --blame-hang-dump-type mini --diag ./coverage/diag.log" \
+          dotnet build "${{ inputs.test_project }}" -c Debug
+          SESSION="zt-${{ github.run_id }}"
+          TEST_BIN="$(dirname "${{ inputs.test_project }}")/bin/Debug"
+          [ -d "$TEST_BIN" ] || TEST_BIN="."
+          # product assemblies = this repo's csproj names, minus test projects;
+          # instrument their copies in the test output (what the tests load)
+          PRODUCT_RE="$(find . -name '*.csproj' -not -path '*/bin/*' -not -path '*/obj/*' \
+            | sed 's|.*/||; s|\.csproj$||' | grep -viE 'tests?$' \
+            | sed 's|\.|\\.|g' | paste -sd'|')"
+          if [ -n "$PRODUCT_RE" ]; then
+            find "$TEST_BIN" -path "*/bin/Debug/*" -name "*.dll" \
+              | grep -E "/(${PRODUCT_RE})\.dll$" \
+              | while IFS= read -r dll; do
+                  dotnet-coverage instrument --session-id "$SESSION" \
+                    --output "$dll.inst" "$dll" && mv "$dll.inst" "$dll"
+                done
+          fi
+          dotnet-coverage collect --session-id "$SESSION" \
+            "dotnet test \"${{ inputs.test_project }}\" --no-build --blame-hang-timeout 8m --blame-hang-dump-type mini --diag ./coverage/diag.log" \
             --output ./coverage/coverage.cobertura.xml --output-format cobertura \
             2>&1 | tee test-report.txt
           test "${PIPESTATUS[0]}" -eq 0
+          # empty-report guard: instrumentation regressions must fail here, not
+          # as a misleading 0% in the diff-coverage gate
+          python3 - <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          root = ET.parse("./coverage/coverage.cobertura.xml").getroot()
+          if not any(True for _ in root.iter("class")):
+              print("::error::coverage report is EMPTY — instrumentation collected nothing")
+              sys.exit(1)
+          PY
 
       - name: Diff-coverage gate (>= min_diff_coverage% of changed lines)
         id: diffcov
