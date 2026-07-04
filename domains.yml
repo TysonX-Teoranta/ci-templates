@@ -53,3 +53,15 @@ domains:
     app_dirs: "agents ai-command dev live ops to-laptop"
     dev_base: origin/main
     status: active
+  ci-templates:
+    # The CICD spine itself. No-dotnet domain: the gate it ships gates its own
+    # changes (.sh shellcheck, .yml/.json/.md hygiene) — a bad edit here instantly
+    # governs every caller repo, so it gets the same dev-grade gate as the rest.
+    # NB root-level files (this registry, README) sit outside app_dirs and the
+    # diff filter — registry edits ride review, not the lint gate.
+    repo: TysonX-Teoranta/ci-templates
+    solution: ""
+    app_project: ""
+    app_dirs: "cicd .github"
+    dev_base: origin/main
+    status: active

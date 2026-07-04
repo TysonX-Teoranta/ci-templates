@@ -1,0 +1,27 @@
+# Thin caller for the shared zero-tolerance gate — on the spine repo itself.
+# ci-templates is dev codebase like the rest: a bad edit to cicd/*.sh or the
+# reusable workflows instantly governs every caller repo, so its own changes go
+# through the same gate (no-dotnet domain: shellcheck + .yml/.json/.md hygiene).
+# NB the gate step checks out ci-templates@main as the spine, so a PR here is
+# judged by the CURRENT main spine, not by its own modified copy — deliberate,
+# matches the @main pin documented in _checks-zero-tolerance.yml.
+name: Checks (v2)
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: checks-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    uses: TysonX-Teoranta/ci-templates/.github/workflows/_checks-zero-tolerance.yml@main
+    with:
+      domain: ci-templates
