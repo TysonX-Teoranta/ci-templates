@@ -13,6 +13,10 @@
 #                comment-density sweep; tests are excluded from zero-tolerance ("" = TBD)
 #   dev_base     git ref the diff-scope gate compares against ("" = TBD)
 #   status       active | on-hold | stub  (advisory; gate skips non-active by default)
+#   test_project test .csproj run at RC finalisation ("" / absent = skip tests at cut)
+#   hygiene      "required" = the repo MUST ship .github/scripts/ci/rc-hygiene.sh
+#                (scrub|source|publish contract) or rc-finalise refuses to cut
+#   rid          publish runtime identifier for the RC artifact (default linux-x64)
 #
 # The gate does NOT store where each repo is checked out — that is environment-specific.
 # Point it at the product working tree with `checks.sh --repo-root <path>` (or the
@@ -28,6 +32,9 @@ domains:
     app_dirs: "LodgersSite LodgersSite.Client LodgersSite.Shared"
     dev_base: origin/lodgers-dev
     status: active
+    test_project: LodgersSite.NUnit.Tests/LodgersSite.NUnit.Tests.csproj
+    hygiene: required
+    rid: linux-x64
   kukuln:
     repo: TysonX-Teoranta/kukuln
     solution: ""
