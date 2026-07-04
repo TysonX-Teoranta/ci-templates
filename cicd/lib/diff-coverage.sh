@@ -69,11 +69,17 @@ def is_code_line(txt):
 #     them without standing up the whole app); they are exercised by integration/
 #     e2e runs, not unit coverage. A CLI-verb dispatch there would otherwise be
 #     permanently uncoverable and block any entry-point change.
+#   * Generated EF Core artifacts — Migrations/ folders (scaffolded DDL that is
+#     exercised by replaying the migration chain against a database, never by
+#     unit tests), plus *.Designer.cs / *ModelSnapshot.cs / *.g.cs. Mirrors the
+#     analyzer gate's generated-code exclusion (parse-diagnostics.sh); without
+#     this, any migration hotfix scores 0% and is permanently unmergeable.
 _TEST_PATH = re.compile(r"(^|/)([^/]*\.(Tests?|IntegrationTests|NUnit\.Tests|Playwright)|Tests?)/")
 _ENTRYPOINT = re.compile(r"(^|/)(Program|Startup)\.cs$")
+_GENERATED = re.compile(r"(^|/)Migrations/|\.Designer\.cs$|ModelSnapshot\.cs$|\.g\.cs$")
 
 def excluded(path):
-    return bool(_TEST_PATH.search(path) or _ENTRYPOINT.search(path))
+    return bool(_TEST_PATH.search(path) or _ENTRYPOINT.search(path) or _GENERATED.search(path))
 
 changed = {}                               # file -> set(code line numbers)
 cur_file = None
