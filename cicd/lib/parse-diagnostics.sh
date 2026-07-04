@@ -45,6 +45,14 @@ count=0
 # Rule pattern: 2+ uppercase letters then digits (CS, CA, SA, IDE, ...).
 diag_re='^(.+)\(([0-9]+),([0-9]+)\): (error|warning) ([A-Z]{2,}[0-9]+): (.*)$'
 
+# MSBuild duplicates: with warnings-as-errors the compiler reports each diagnostic
+# both inline and in the trailing error list, so the same (file,line,col,rule) shows
+# up twice in the raw log. Count each real finding once.
+declare -A seen
+
+# tr '\r' '\n': dotnet writes progress lines with bare carriage returns, so a raw
+# log line can be "Time Elapsed 00:0\r/path/File.cs(3,14): error ..." — read splits
+# on \n only and the junk prefix would corrupt the captured file path.
 while IFS= read -r line; do
   [[ $line =~ $diag_re ]] || continue
   file=${BASH_REMATCH[1]}
@@ -63,11 +71,14 @@ while IFS= read -r line; do
   esac
   msg=${msg% \[*.csproj\]}
   in_scope "$file" || continue
+  key="$sev|$rule|$file|$lno|$col"
+  [ -n "${seen[$key]:-}" ] && continue
+  seen[$key]=1
   count=$((count + 1))
   printf '%s\t%s\t%s\t%s:%s\t%s\n' "$sev" "$rule" "$file" "$lno" "$col" "$msg" >> "$OUT_TXT"
   printf '{"severity":"%s","rule":"%s","file":"%s","line":%s,"col":%s,"message":"%s"}\n' \
     "$sev" "$rule" "$(_json_escape "$file")" "$lno" "$col" "$(_json_escape "$msg")" >> "$tmp_json"
-done < "$RAW_LOG"
+done < <(tr '\r' '\n' < "$RAW_LOG")
 
 # Emit findings.json: header + comma-joined objects.
 {
