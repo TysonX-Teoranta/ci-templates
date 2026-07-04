@@ -4,7 +4,9 @@
 # through the same gate (no-dotnet domain: shellcheck + .yml/.json/.md hygiene).
 # NB the gate step checks out ci-templates@main as the spine, so a PR here is
 # judged by the CURRENT main spine, not by its own modified copy — deliberate,
-# matches the @main pin documented in _checks-zero-tolerance.yml.
+# matches the @main pin documented in _checks-zero-tolerance.yml. The selftest
+# job below closes the gap: it runs cicd/selftest.sh from the PR's OWN checkout,
+# so spine logic changes are proven by their own offline tests before merge.
 name: Checks (v2)
 
 on:
@@ -25,3 +27,15 @@ jobs:
     uses: TysonX-Teoranta/ci-templates/.github/workflows/_checks-zero-tolerance.yml@main
     with:
       domain: ci-templates
+
+  # Spine selftest from THIS PR's checkout (not @main) — offline, no dotnet/GitHub.
+  selftest:
+    runs-on: [self-hosted, tysonx-dev]
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Run spine selftest (PR's own copy)
+        run: bash cicd/selftest.sh

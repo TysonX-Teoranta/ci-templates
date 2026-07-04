@@ -119,10 +119,20 @@ for cls in tree.getroot().iter("class"):
         dest[n] = max(dest.get(n, 0), int(l.get("hits", "0")))
 
 def find_hits(path):
+    # Suffix matching lines up absolute cobertura filenames with repo-relative
+    # diff paths, but it must align on a `/` boundary — a bare endswith would
+    # bind LodgersSite/Foo.cs to LodgersSite.Client/Foo.cs coverage. Exact match
+    # wins outright; otherwise take the LONGEST boundary-aligned suffix match
+    # rather than whichever entry the dict yields first.
+    best, best_len = None, -1
     for fname, lines in hit_by_file.items():
-        if fname.endswith(path) or path.endswith(fname):
+        if fname == path:
             return lines
-    return None
+        if fname.endswith("/" + path) or path.endswith("/" + fname):
+            n = min(len(fname), len(path))
+            if n > best_len:
+                best, best_len = lines, n
+    return best
 
 # Every remaining changed line is executable code. Covered = cobertura reports a
 # hit>0 for it. A code line the report does not mention (whole file absent, or a

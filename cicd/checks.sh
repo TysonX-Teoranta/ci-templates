@@ -137,6 +137,29 @@ ZEROTOL_PROPS=(
 [ -n "$APP_PROJECT" ] && require dotnet
 require git
 require jq
+# Preflight the tools the lib checks shell out to. The libs exit 3 when a tool is
+# missing, and a swallowed exit 3 would count as 0 findings — a missing linter must
+# fail the gate HERE, never wave it green with checks silently not run.
+require shellcheck
+require python3
+python3 -c 'import yaml' >/dev/null 2>&1 || die "required python3 module not importable: yaml (pip install pyyaml on the runner)" 3
+
+# run_lint <name> <script> [args...] — run a lib check, leave its finding count in
+# LINT_COUNT. The libs print a single count to stdout and exit 0; exit 3 = missing
+# tool, anything else / a non-numeric count = the check DID NOT RUN. Both must die
+# rather than be scored as 0 findings (the old `|| true` capture swallowed them).
+LINT_COUNT=0
+run_lint() {
+  local name="$1" out rc
+  shift
+  out=$("$@")
+  rc=$?
+  [ "$rc" -eq 3 ] && die "$name: required tool missing (exit 3) — check not run" 3
+  if [ "$rc" -ne 0 ] || ! [[ $out =~ ^[0-9]+$ ]]; then
+    die "$name: no finding count produced (rc=$rc output='$out') — check not run" 3
+  fi
+  LINT_COUNT="$out"
+}
 
 mkdir -p "$REPORT_DIR"
 RAW_LOG="$REPORT_DIR/build.raw.log"
@@ -240,7 +263,8 @@ else
   done
 fi
 if [ "${#DENSITY_TARGETS[@]}" -gt 0 ]; then
-  DENSITY_FAILS=$("$CICD_ROOT/lib/comment-density.sh" --report-append "$FINDINGS_TXT" "${DENSITY_TARGETS[@]}") || true
+  run_lint comment-density "$CICD_ROOT/lib/comment-density.sh" --report-append "$FINDINGS_TXT" "${DENSITY_TARGETS[@]}"
+  DENSITY_FAILS=$LINT_COUNT
 fi
 
 # Comment-density is advisory unless --strict-density: it never fails the gate by
@@ -271,7 +295,8 @@ else
   done
 fi
 if [ "${#JSON_TARGETS[@]}" -gt 0 ]; then
-  JSON_FAILS=$("$CICD_ROOT/lib/json-lint.sh" --report-append "$FINDINGS_TXT" "${JSON_TARGETS[@]}") || true
+  run_lint json-lint "$CICD_ROOT/lib/json-lint.sh" --report-append "$FINDINGS_TXT" "${JSON_TARGETS[@]}"
+  JSON_FAILS=$LINT_COUNT
 fi
 
 # --- XML-family validity + whitespace-hygiene check (.xml/.csproj/.props/.targets) --
@@ -290,7 +315,8 @@ else
   done
 fi
 if [ "${#XML_TARGETS[@]}" -gt 0 ]; then
-  XML_FAILS=$("$CICD_ROOT/lib/xml-lint.sh" --report-append "$FINDINGS_TXT" "${XML_TARGETS[@]}") || true
+  run_lint xml-lint "$CICD_ROOT/lib/xml-lint.sh" --report-append "$FINDINGS_TXT" "${XML_TARGETS[@]}"
+  XML_FAILS=$LINT_COUNT
 fi
 
 # --- YAML validity + whitespace-hygiene check (.yml/.yaml) -------------------
@@ -309,7 +335,8 @@ else
   done
 fi
 if [ "${#YAML_TARGETS[@]}" -gt 0 ]; then
-  YAML_FAILS=$("$CICD_ROOT/lib/yaml-lint.sh" --report-append "$FINDINGS_TXT" "${YAML_TARGETS[@]}") || true
+  run_lint yaml-lint "$CICD_ROOT/lib/yaml-lint.sh" --report-append "$FINDINGS_TXT" "${YAML_TARGETS[@]}"
+  YAML_FAILS=$LINT_COUNT
 fi
 
 # --- Repo-root .editorconfig check --------------------------------------------
@@ -317,7 +344,8 @@ fi
 # checks it if present, diff-scope checks it only when the diff actually touched it.
 EDITORCONFIG_FAILS=0
 if { [ "$SCOPE" = "whole" ] || [ "$EDITORCONFIG_CHANGED" -eq 1 ]; } && [ -f "$DOMAIN_ROOT/.editorconfig" ]; then
-  EDITORCONFIG_FAILS=$("$CICD_ROOT/lib/editorconfig-lint.sh" --report-append "$FINDINGS_TXT" "$DOMAIN_ROOT/.editorconfig") || true
+  run_lint editorconfig-lint "$CICD_ROOT/lib/editorconfig-lint.sh" --report-append "$FINDINGS_TXT" "$DOMAIN_ROOT/.editorconfig"
+  EDITORCONFIG_FAILS=$LINT_COUNT
 fi
 
 # --- Shell-script check (.sh, via shellcheck) ---------------------------------
@@ -335,7 +363,8 @@ else
   done
 fi
 if [ "${#SHELL_TARGETS[@]}" -gt 0 ]; then
-  SHELL_FAILS=$("$CICD_ROOT/lib/shell-lint.sh" --report-append "$FINDINGS_TXT" "${SHELL_TARGETS[@]}") || true
+  run_lint shell-lint "$CICD_ROOT/lib/shell-lint.sh" --report-append "$FINDINGS_TXT" "${SHELL_TARGETS[@]}"
+  SHELL_FAILS=$LINT_COUNT
 fi
 
 # --- Markdown check (.md — unclosed fences + whitespace hygiene) -------------
@@ -353,7 +382,8 @@ else
   done
 fi
 if [ "${#MD_TARGETS[@]}" -gt 0 ]; then
-  MD_FAILS=$("$CICD_ROOT/lib/md-lint.sh" --report-append "$FINDINGS_TXT" "${MD_TARGETS[@]}") || true
+  run_lint md-lint "$CICD_ROOT/lib/md-lint.sh" --report-append "$FINDINGS_TXT" "${MD_TARGETS[@]}"
+  MD_FAILS=$LINT_COUNT
 fi
 
 GATE_TOTAL=$((ANALYZER_COUNT + DENSITY_GATE + JSON_FAILS + XML_FAILS + YAML_FAILS + EDITORCONFIG_FAILS + SHELL_FAILS + MD_FAILS))
