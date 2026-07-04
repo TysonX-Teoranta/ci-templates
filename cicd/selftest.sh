@@ -93,6 +93,41 @@ else
   warn "jq not present — skipping json-lint selftests"
 fi
 
+# --- diff-coverage: cobertura-untracked lines (comments/braces) carry no test
+#     burden; uncovered TRACKED lines still gate; unmatched files stay strict -----
+if command -v python3 >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+  DC="$CICD_ROOT/lib/diff-coverage.sh"
+  R="$WORK/dcrepo"; mkdir -p "$R"
+  git -C "$R" init -q
+  printf 'int a=1;\nint b=2;\n' > "$R/File.cs"
+  git -C "$R" add File.cs
+  git -C "$R" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm base
+  # HEAD adds two comment lines (not in cobertura) + one covered code line (line 4).
+  printf 'int a=1;\n// why: context\n// more context\nint c=3;\nint b=2;\n' > "$R/File.cs"
+  git -C "$R" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qam head
+  cat > "$WORK/cov-hit.xml" <<'XML'
+<coverage><packages><package><classes><class filename="File.cs">
+<lines><line number="1" hits="1"/><line number="4" hits="1"/><line number="5" hits="1"/></lines>
+</class></classes></package></packages></coverage>
+XML
+  (cd "$R" && bash "$DC" --cobertura "$WORK/cov-hit.xml" --min 80 --base HEAD~1 >/dev/null 2>&1)
+  ok "diffcov/comment-lines-exempt" "$?" "0"
+  # Same diff, but the one tracked changed line (4) is UNCOVERED — must fail.
+  sed 's/number="4" hits="1"/number="4" hits="0"/' "$WORK/cov-hit.xml" > "$WORK/cov-miss.xml"
+  (cd "$R" && bash "$DC" --cobertura "$WORK/cov-miss.xml" --min 80 --base HEAD~1 >/dev/null 2>&1)
+  ok "diffcov/uncovered-tracked-fails" "$?" "1"
+  # File absent from the report entirely — new untested file stays gated.
+  cat > "$WORK/cov-none.xml" <<'XML'
+<coverage><packages><package><classes><class filename="Other.cs">
+<lines><line number="1" hits="1"/></lines>
+</class></classes></package></packages></coverage>
+XML
+  (cd "$R" && bash "$DC" --cobertura "$WORK/cov-none.xml" --min 80 --base HEAD~1 >/dev/null 2>&1)
+  ok "diffcov/unmatched-file-still-strict" "$?" "1"
+else
+  warn "python3/git not present — skipping diff-coverage selftests"
+fi
+
 # --- Verdict ------------------------------------------------------------------
 log "selftest: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

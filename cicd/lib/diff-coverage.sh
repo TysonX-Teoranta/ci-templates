@@ -79,11 +79,22 @@ total, covered, unmatched = 0, 0, []
 for path, lns in changed.items():
     hits = find_hits(path)
     for ln in lns:
-        total += 1
         if hits is None:
+            # File absent from the coverage report entirely: a new/never-loaded file.
+            # Stay strict — its changed lines all gate as uncovered (a new untested
+            # file must not pass vacuously).
+            total += 1
             unmatched.append(f"{path}:{ln}")
             continue
-        if hits.get(ln, 0) > 0:
+        if ln not in hits:
+            # The file IS in the report but cobertura does not track this line:
+            # comments, blank lines, braces, usings — nothing instrumentable.
+            # Demanding coverage of non-executable lines would fail every
+            # comment-only change (the exact work the comment-density check asks
+            # for), so untracked lines carry no test burden.
+            continue
+        total += 1
+        if hits[ln] > 0:
             covered += 1
 
 pct = (covered / total * 100) if total else 100.0
