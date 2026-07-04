@@ -112,11 +112,19 @@ jobs:
           SESSION="zt-${{ github.run_id }}"
           TEST_BIN="$(dirname "${{ inputs.test_project }}")/bin/Debug"
           [ -d "$TEST_BIN" ] || TEST_BIN="."
-          # product assemblies = this repo's csproj names, minus test projects;
-          # instrument their copies in the test output (what the tests load)
+          # product assemblies = this repo's non-test projects' OUTPUT names;
+          # instrument their copies in the test output (what the tests load).
+          # The output name is <AssemblyName> when the csproj sets one (tysonx:
+          # TysonxSite.csproj -> tysonx-site.dll; matching on csproj basenames
+          # instrumented NOTHING there and the empty-report guard killed the PR),
+          # falling back to the csproj basename when it doesn't.
           PRODUCT_RE="$(find . -name '*.csproj' -not -path '*/bin/*' -not -path '*/obj/*' \
-            | sed 's|.*/||; s|\.csproj$||' | grep -viE 'tests?$' \
-            | sed 's|\.|\\.|g' | paste -sd'|')"
+            | grep -viE '/[^/]*tests?\.csproj$' \
+            | while IFS= read -r proj; do
+                name="$(sed -n 's:.*<AssemblyName>[[:space:]]*\([^<]*[^<[:space:]]\)[[:space:]]*</AssemblyName>.*:\1:p' "$proj" | head -1)"
+                echo "${name:-$(basename "$proj" .csproj)}"
+              done \
+            | sed 's|[.[\*^$+?{}()|]|\\&|g' | paste -sd'|')"
           if [ -n "$PRODUCT_RE" ]; then
             find "$TEST_BIN" -path "*/bin/Debug/*" -name "*.dll" \
               | grep -E "/(${PRODUCT_RE})\.dll$" \
