@@ -36,6 +36,11 @@ on:
         required: false
         type: number
         default: 80
+      min_total_coverage:
+        description: "floor for TOTAL product line coverage (ratchet toward 100); 0 = report-only"
+        required: false
+        type: number
+        default: 0
       retry_limit:
         required: false
         type: number
@@ -143,6 +148,16 @@ jobs:
           .ci-templates/cicd/lib/diff-coverage.sh --cobertura "$COBERTURA" \
             --min "${{ inputs.min_diff_coverage }}" --base "origin/${{ github.base_ref }}" -v
 
+      # Total-coverage floor. Runs even at min 0 so every PR's log carries the
+      # whole-codebase number + worst-offender list — the ratchet's evidence trail.
+      - name: Full-coverage gate (total line coverage >= min_total_coverage%)
+        id: fullcov
+        if: inputs.test_project != ''
+        run: |
+          COBERTURA=$(find ./coverage -name "coverage.cobertura.xml" | head -1)
+          .ci-templates/cicd/lib/full-coverage.sh --cobertura "$COBERTURA" \
+            --min "${{ inputs.min_total_coverage }}" -v
+
       - name: Attach failure report
         if: failure()
         run: |
@@ -159,11 +174,12 @@ jobs:
           GATE: ${{ steps.gate.outcome }}
           TEST: ${{ steps.test.outcome }}
           DIFFCOV: ${{ steps.diffcov.outcome }}
+          FULLCOV: ${{ steps.fullcov.outcome }}
         run: |
           # Record only real verdicts. If the gate never ran (checkout/setup died →
           # outcome skipped/cancelled) there is no code verdict, and an infra death
           # must not consume the rework budget toward step3-elevate.
-          if [ "$GATE" = "failure" ] || [ "$TEST" = "failure" ] || [ "$DIFFCOV" = "failure" ]; then
+          if [ "$GATE" = "failure" ] || [ "$TEST" = "failure" ] || [ "$DIFFCOV" = "failure" ] || [ "$FULLCOV" = "failure" ]; then
             RESULT="fail"
           elif [ "$GATE" = "success" ]; then
             RESULT="pass"

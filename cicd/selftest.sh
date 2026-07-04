@@ -194,6 +194,49 @@ else
   warn "python3/git not present — skipping diff-coverage selftests"
 fi
 
+# --- full-coverage: total floor gates; generated/test files exempt; partial
+#     class entries merge; an empty report fails loudly, never passes vacuously ---
+if command -v python3 >/dev/null 2>&1; then
+  FC="$CICD_ROOT/lib/full-coverage.sh"
+  # 3 of 4 product lines covered = 75%: passes a 70 floor, fails an 80 floor.
+  cat > "$WORK/fc-mixed.xml" <<'XML'
+<coverage><packages><package><classes><class filename="App/File.cs">
+<lines><line number="1" hits="1"/><line number="2" hits="1"/><line number="3" hits="1"/><line number="4" hits="0"/></lines>
+</class></classes></package></packages></coverage>
+XML
+  bash "$FC" --cobertura "$WORK/fc-mixed.xml" --min 70 >/dev/null 2>&1
+  ok "fullcov/above-floor-passes" "$?" "0"
+  bash "$FC" --cobertura "$WORK/fc-mixed.xml" --min 80 >/dev/null 2>&1
+  ok "fullcov/below-floor-fails" "$?" "1"
+  # Generated EF artifacts must not drag the total: the uncovered Migrations file
+  # is excluded, leaving the covered product line = 100%.
+  cat > "$WORK/fc-gen.xml" <<'XML'
+<coverage><packages><package><classes>
+<class filename="App/File.cs"><lines><line number="1" hits="1"/></lines></class>
+<class filename="App/Migrations/20260101_Init.cs"><lines><line number="1" hits="0"/><line number="2" hits="0"/></lines></class>
+</classes></package></packages></coverage>
+XML
+  bash "$FC" --cobertura "$WORK/fc-gen.xml" --min 100 >/dev/null 2>&1
+  ok "fullcov/generated-excluded" "$?" "0"
+  # Partial-class entries merge on max hits: line 1 covered in one entry only.
+  cat > "$WORK/fc-partial.xml" <<'XML'
+<coverage><packages><package><classes>
+<class filename="App/File.cs"><lines><line number="1" hits="0"/></lines></class>
+<class filename="App/File.cs"><lines><line number="1" hits="3"/></lines></class>
+</classes></package></packages></coverage>
+XML
+  bash "$FC" --cobertura "$WORK/fc-partial.xml" --min 100 >/dev/null 2>&1
+  ok "fullcov/partial-class-hits-merge" "$?" "0"
+  # A report with zero coverable product lines = broken instrumentation → fail.
+  cat > "$WORK/fc-empty.xml" <<'XML'
+<coverage><packages></packages></coverage>
+XML
+  bash "$FC" --cobertura "$WORK/fc-empty.xml" --min 0 >/dev/null 2>&1
+  ok "fullcov/empty-report-fails" "$?" "1"
+else
+  warn "python3 not present — skipping full-coverage selftests"
+fi
+
 # --- Verdict ------------------------------------------------------------------
 log "selftest: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
