@@ -124,6 +124,15 @@ XML
 XML
   (cd "$R" && bash "$DC" --cobertura "$WORK/cov-none.xml" --min 80 --base HEAD~1 >/dev/null 2>&1)
   ok "diffcov/unmatched-file-still-strict" "$?" "1"
+  # A NEW test-project file (uncovered by design) must NOT gate — test code is not
+  # coverage-bearing product code. Add an untested .cs under a .Tests/ project on top
+  # of the covered product change; the gate must still pass (test file excluded).
+  mkdir -p "$R/App.NUnit.Tests"
+  printf 'int t1=1;\nint t2=2;\nint t3=3;\n' > "$R/App.NUnit.Tests/FooTests.cs"
+  git -C "$R" add App.NUnit.Tests/FooTests.cs
+  git -C "$R" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm tests
+  (cd "$R" && bash "$DC" --cobertura "$WORK/cov-hit.xml" --min 80 --base HEAD~2 >/dev/null 2>&1)
+  ok "diffcov/test-files-excluded" "$?" "0"
 else
   warn "python3/git not present — skipping diff-coverage selftests"
 fi
