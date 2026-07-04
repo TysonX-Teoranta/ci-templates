@@ -42,24 +42,49 @@ diff = subprocess.run(
     capture_output=True, text=True, check=True
 ).stdout
 
-changed = {}
+# Walk the unified diff and collect ADDED lines that are executable-CODE-shaped.
+# Non-executable added lines (comments, blank lines, lone braces, using/namespace)
+# can never be covered by a test, so they must not demand coverage — otherwise a
+# comment-only or doc-only change (exactly what the comment-density check asks for)
+# scores 0% and fails. This is content-based, so it holds even when the changed
+# file is entirely absent from the coverage report (e.g. never loaded by any test).
+def is_code_line(txt):
+    s = txt.strip()
+    if not s:
+        return False                       # blank
+    if s.startswith(("//", "/*", "*", "///")):
+        return False                       # line/block/doc comment
+    if s in ("{", "}", "(", ")", "};", ");", "})", "],", "],["):
+        return False                       # structural brace/paren only
+    if s.startswith(("using ", "namespace ")) and s.endswith((";", "{")):
+        return False                       # import / namespace declaration
+    return True
+
+changed = {}                               # file -> set(code line numbers)
 cur_file = None
+new_ln = 0
 for line in diff.splitlines():
     if line.startswith("+++ b/"):
         cur_file = line[6:]
         changed.setdefault(cur_file, set())
-    m = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
-    if m and cur_file:
-        start = int(m.group(1))
-        count = int(m.group(2)) if m.group(2) else 1
-        # A deletion-only hunk shows "+<line>,0" — zero lines exist on the new side,
-        # so there is nothing to demand coverage of. Counting max(count,1) here would
-        # gate one untouched line per deletion hunk.
-        for ln in range(start, start + count):
-            changed[cur_file].add(ln)
+        continue
+    m = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+    if m:
+        new_ln = int(m.group(1))
+        continue
+    if cur_file is None:
+        continue
+    if line.startswith("+"):               # added line on the new side
+        if is_code_line(line[1:]):
+            changed[cur_file].add(new_ln)
+        new_ln += 1
+    elif line.startswith("-"):             # removed line — no new-side number
+        pass
+    else:                                  # context line advances the new side
+        new_ln += 1
 
 if not any(changed.values()):
-    print("diff-coverage: no changed .cs lines — pass")
+    print("diff-coverage: no changed executable .cs lines — pass")
     sys.exit(0)
 
 tree = ET.parse(cobertura)
@@ -75,27 +100,19 @@ def find_hits(path):
             return lines
     return None
 
+# Every remaining changed line is executable code. Covered = cobertura reports a
+# hit>0 for it. A code line the report does not mention (whole file absent, or a
+# line the tool did not instrument) counts as UNCOVERED — a new untested file must
+# not pass vacuously. Comment/blank lines were already excluded above by content.
 total, covered, unmatched = 0, 0, []
 for path, lns in changed.items():
     hits = find_hits(path)
     for ln in lns:
-        if hits is None:
-            # File absent from the coverage report entirely: a new/never-loaded file.
-            # Stay strict — its changed lines all gate as uncovered (a new untested
-            # file must not pass vacuously).
-            total += 1
-            unmatched.append(f"{path}:{ln}")
-            continue
-        if ln not in hits:
-            # The file IS in the report but cobertura does not track this line:
-            # comments, blank lines, braces, usings — nothing instrumentable.
-            # Demanding coverage of non-executable lines would fail every
-            # comment-only change (the exact work the comment-density check asks
-            # for), so untracked lines carry no test burden.
-            continue
         total += 1
-        if hits[ln] > 0:
+        if hits is not None and hits.get(ln, 0) > 0:
             covered += 1
+        else:
+            unmatched.append(f"{path}:{ln}")
 
 pct = (covered / total * 100) if total else 100.0
 if verbose:
