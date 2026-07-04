@@ -126,6 +126,20 @@ jobs:
           # JSON docs, not one array) — downstream jq then mis-indexes and the counts
           # go garbage (observed live: lodgers#292 read "0/3 checks passing" as green).
           # Stream elements and re-slurp into a single array instead.
+          # Gate on the REQUIRED contexts only (what branch protection actually
+          # blocks a merge on). A failing non-required check must not stall the
+          # dev lane: GitHub's Automatic Dependency Submission red-flagged every
+          # lodgers PR (component-detection has no linux-arm64 build) and automerge
+          # deadlocked on green-gated PRs (lodgers#305/#306, 2026-07-04). If the
+          # protection read fails, fall back to gating on ALL checks (conservative).
+          required_json=$(gh api "repos/${REPO}/branches/${base}/protection/required_status_checks" --jq '[.contexts[]]' 2>/dev/null) || required_json=""
+          jq -e 'type == "array" and length > 0' >/dev/null 2>&1 <<<"$required_json" || required_json=""
+          if [ -n "$required_json" ]; then
+            echo "gating on required contexts only: $(jq -r 'join(", ")' <<<"$required_json")"
+          else
+            echo "could not read required contexts — gating on ALL check-runs (conservative fallback)."
+          fi
+
           total_checks=0 not_done=1 not_success=1
           for attempt in $(seq 1 10); do
             # Fallback REPLACES, never appends: the old `|| echo "[]"` CONCATENATED
@@ -139,6 +153,11 @@ jobs:
             # as the PR, so this run (and any sibling automerge run) must be excluded
             # from the gate count — counting them is waiting on ourselves.
             runs_json=$(jq '[.[] | select((.name | startswith("automerge /") or startswith("Resolve PR number")) | not)]' <<<"$raw")
+            # Required-only gate: keep just the check-runs whose name is a
+            # protected context (names match exactly, e.g. "checks / zero-tolerance").
+            if [ -n "$required_json" ]; then
+              runs_json=$(jq --argjson req "$required_json" '[.[] | select(.name as $n | $req | index($n))]' <<<"$runs_json")
+            fi
             total_checks=$(jq -r 'length' <<<"$runs_json")
             not_done=$(jq -r '[.[] | select(.status != "completed")] | length' <<<"$runs_json")
             not_success=$(jq -r '[.[] | select(.conclusion != "success")] | length' <<<"$runs_json")
