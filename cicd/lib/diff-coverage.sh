@@ -60,13 +60,21 @@ def is_code_line(txt):
         return False                       # import / namespace declaration
     return True
 
+# Test-project files are the tests themselves — coverage.runsettings excludes them
+# (IncludeTestAssembly=false), so demanding they be "covered" scores 0% and fails any
+# PR that adds tests. A path segment for a *.Tests/*.Test/*.IntegrationTests project,
+# the .NUnit.Tests/.Playwright projects, or a plain Tests/ dir carries no coverage burden.
+_TEST_PATH = re.compile(r"(^|/)([^/]*\.(Tests?|IntegrationTests|NUnit\.Tests|Playwright)|Tests?)/")
+
 changed = {}                               # file -> set(code line numbers)
 cur_file = None
 new_ln = 0
 for line in diff.splitlines():
     if line.startswith("+++ b/"):
-        cur_file = line[6:]
-        changed.setdefault(cur_file, set())
+        path = line[6:]
+        cur_file = None if _TEST_PATH.search(path) else path
+        if cur_file is not None:
+            changed.setdefault(cur_file, set())
         continue
     m = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
     if m:
