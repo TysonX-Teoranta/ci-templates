@@ -69,11 +69,17 @@ def is_code_line(txt):
 #     them without standing up the whole app); they are exercised by integration/
 #     e2e runs, not unit coverage. A CLI-verb dispatch there would otherwise be
 #     permanently uncoverable and block any entry-point change.
+#   * EF migrations (Migrations/ dirs) — schema DDL that only executes inside a
+#     real database migration run, never under unit tests, so its lines can never
+#     appear covered. Verified by replaying the chain against a database (the
+#     2026-07-04 fresh-DB rebuild), not by unit coverage; counting these lines
+#     blocked exactly that repair work at a false 0%.
 _TEST_PATH = re.compile(r"(^|/)([^/]*\.(Tests?|IntegrationTests|NUnit\.Tests|Playwright)|Tests?)/")
 _ENTRYPOINT = re.compile(r"(^|/)(Program|Startup)\.cs$")
+_MIGRATIONS = re.compile(r"(^|/)Migrations/")
 
 def excluded(path):
-    return bool(_TEST_PATH.search(path) or _ENTRYPOINT.search(path))
+    return bool(_TEST_PATH.search(path) or _ENTRYPOINT.search(path) or _MIGRATIONS.search(path))
 
 changed = {}                               # file -> set(code line numbers)
 cur_file = None
