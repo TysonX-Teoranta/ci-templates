@@ -41,6 +41,11 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  # Without checks:read an explicit permissions block strips it from GITHUB_TOKEN and
+  # the check-runs read below 403s ("Resource not accessible by integration") — which,
+  # combined with the old append-style fallback, deadlocked every merge (tysonx#84).
+  # Callers must grant it too: a reusable cannot exceed its caller's grant.
+  checks: read
 
 jobs:
   automerge:
@@ -123,7 +128,17 @@ jobs:
           # Stream elements and re-slurp into a single array instead.
           total_checks=0 not_done=1 not_success=1
           for attempt in $(seq 1 10); do
-            runs_json=$(gh api "repos/${REPO}/commits/${head_sha}/check-runs" --paginate --jq '.check_runs[]' 2>/dev/null | jq -s '.' || echo "[]")
+            # Fallback REPLACES, never appends: the old `|| echo "[]"` CONCATENATED
+            # "[]" onto partial output whenever gh exited non-zero despite emitting
+            # data, making every count below multiline and the green condition
+            # unsatisfiable — automerge deadlocked on a fully green PR (tysonx#84,
+            # 2026-07-04). gh stderr is left visible in the log on purpose.
+            raw=$(gh api "repos/${REPO}/commits/${head_sha}/check-runs" --paginate --jq '.check_runs[]' | jq -s '.') || raw=""
+            jq -e 'type == "array"' >/dev/null 2>&1 <<<"$raw" || raw="[]"
+            # A workflow_run-triggered run reports its check-runs on the SAME head SHA
+            # as the PR, so this run (and any sibling automerge run) must be excluded
+            # from the gate count — counting them is waiting on ourselves.
+            runs_json=$(jq '[.[] | select((.name | startswith("automerge /") or startswith("Resolve PR number")) | not)]' <<<"$raw")
             total_checks=$(jq -r 'length' <<<"$runs_json")
             not_done=$(jq -r '[.[] | select(.status != "completed")] | length' <<<"$runs_json")
             not_success=$(jq -r '[.[] | select(.conclusion != "success")] | length' <<<"$runs_json")
