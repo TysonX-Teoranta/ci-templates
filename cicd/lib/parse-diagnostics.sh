@@ -31,8 +31,10 @@ in_scope() {
   [ "$SCOPE" = "whole" ] && return 0
   local p=$1 f
   for f in "${IN_SCOPE[@]}"; do
-    # Match on suffix so absolute build paths line up with repo-relative diff paths.
-    case "$p" in *"$f") return 0 ;; esac
+    # Match on suffix so absolute build paths line up with repo-relative diff
+    # paths — anchored on a path boundary (exact or */f), or a diagnostic in
+    # PrefixX/Sub/Foo.cs would count against in-scope X/Sub/Foo.cs.
+    case "$p" in "$f"|*/"$f") return 0 ;; esac
   done
   return 1
 }

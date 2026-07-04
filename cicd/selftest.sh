@@ -9,6 +9,7 @@
 # Deterministic, zero-AI, no network. Safe to run anywhere bash + coreutils exist.
 
 # shellcheck source=lib/common.sh
+# shellcheck disable=SC1091  # sourced sibling is linted separately; -x not used in shell-lint
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
 [ "${1:-}" = "-v" ] && CICD_VERBOSE=1
@@ -66,6 +67,42 @@ bash "$PD" "$WORK/raw.log" diff gate "$WORK/d.json" "$WORK/d.txt" LodgersSite/Fo
 dtotal=$(sed -n 's/.*"total_analyzer":\([0-9]*\).*/\1/p' "$WORK/d.json")
 ok "diff/only-in-scope-file" "$dtotal" "1"
 ok "diff/kept-rule-is-CS1591" "$(grep -o '"rule":"[^"]*"' "$WORK/d.json")" '"rule":"CS1591"'
+
+# --- parse-diagnostics: diff-scope suffix match anchors on a path boundary —
+#     a diagnostic in PrefixX/Sub/Foo.cs must NOT bind to in-scope X/Sub/Foo.cs;
+#     absolute (/repo/X/…) and bare repo-relative paths both still match ---------
+cat > "$WORK/anchor.log" <<'EOF'
+/repo/X/Sub/Foo.cs(1,1): warning CS1591: Missing XML comment [/repo/P.csproj]
+/repo/PrefixX/Sub/Foo.cs(2,2): warning CS1591: Missing XML comment [/repo/P.csproj]
+X/Sub/Foo.cs(3,3): warning CS1591: Missing XML comment [/repo/P.csproj]
+EOF
+bash "$PD" "$WORK/anchor.log" diff gate "$WORK/a.json" "$WORK/a.txt" X/Sub/Foo.cs
+atotal=$(sed -n 's/.*"total_analyzer":\([0-9]*\).*/\1/p' "$WORK/a.json")
+ok "diff/suffix-match-boundary-anchored" "$atotal" "2"
+ok "diff/prefix-lookalike-excluded" "$(grep -c 'PrefixX' "$WORK/a.json")" "0"
+
+# --- registry reader: inline comments + trailing whitespace must not corrupt
+#     values (quoted or bare); clean parses stay byte-identical ------------------
+{
+  printf 'version: 1\n\ndomains:\n'
+  printf '  alpha:\n'
+  printf '    repo: TysonX-Teoranta/alpha\n'
+  printf '    status: active  # inline note must strip\n'
+  printf '    app_dirs: "cicd .github" \n'
+  printf '    dev_base: origin/main\n'
+  printf '  beta:\n'
+  printf '    status: "on-hold"\n'
+  printf '    app_dirs: plain\t\n'
+} > "$WORK/reg.yml"
+REG_SAVE="$REGISTRY"
+REGISTRY="$WORK/reg.yml"
+ok "registry/inline-comment-stripped"  "$(domain_field alpha status)" "active"
+ok "registry/quoted-trailing-ws"       "$(domain_field alpha app_dirs)" "cicd .github"
+ok "registry/clean-bare-value"         "$(domain_field alpha dev_base)" "origin/main"
+ok "registry/clean-quoted-value"       "$(domain_field beta status)" "on-hold"
+ok "registry/bare-trailing-ws"         "$(domain_field beta app_dirs)" "plain"
+ok "registry/domains-list"             "$(domains_list | paste -sd' ')" "alpha beta"
+REGISTRY="$REG_SAVE"
 
 # --- comment-density: dense file fails, tiny file exempt, commented file passes -
 { echo "public class X {"; for i in $(seq 1 20); do echo "  int v$i = $i;"; done; echo "}"; } > "$WORK/Dense.cs"

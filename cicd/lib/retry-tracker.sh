@@ -37,17 +37,31 @@ case "$RESULT" in
   *) echo "--result must be pass|fail" >&2; exit 1 ;;
 esac
 
-CURRENT=$(gh api "repos/${REPO}/issues/${PR}/labels" --jq '.[].name' 2>/dev/null \
-  | grep -E '^zt-fail-[0-9]+$' | sed 's/zt-fail-//' | head -1 || true)
-CURRENT="${CURRENT:-0}"
+# A failed label read must FAIL the step, not silently zero the counter — a
+# zeroed CURRENT resets the consecutive-failure budget and strands stale
+# zt-fail-N labels, so an API blip would quietly defeat the elevation limit.
+if ! LABELS=$(gh api "repos/${REPO}/issues/${PR}/labels" --jq '.[].name'); then
+  echo "retry-tracker: gh api label read failed for ${REPO}#${PR} — refusing to proceed with a zeroed counter" >&2
+  exit 1
+fi
+# Every zt-fail-* present (at most one is expected; stale extras from earlier
+# partial runs are all cleared below). CURRENT = the highest counter seen.
+mapfile -t ZT_LABELS < <(printf '%s\n' "$LABELS" | grep -E '^zt-fail-[0-9]+$' || true)
+CURRENT=0
+if [ "${#ZT_LABELS[@]}" -gt 0 ]; then
+  CURRENT=$(printf '%s\n' "${ZT_LABELS[@]}" | sed 's/zt-fail-//' | sort -rn | head -1)
+fi
 
 run() {
   if [ "$DRY_RUN" -eq 1 ]; then echo "+ $*"; else "$@"; fi
 }
 clear_current() {
-  if [ "$CURRENT" != 0 ]; then
-    run gh api -X DELETE "repos/${REPO}/issues/${PR}/labels/zt-fail-${CURRENT}" >/dev/null 2>&1 || true
-  fi
+  # Remove ALL zt-fail-* labels, not just the one read — a leftover duplicate
+  # would otherwise stick to the PR forever.
+  local l
+  for l in "${ZT_LABELS[@]}"; do
+    run gh api -X DELETE "repos/${REPO}/issues/${PR}/labels/${l}" >/dev/null 2>&1 || true
+  done
 }
 
 if [ "$RESULT" = pass ]; then

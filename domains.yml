@@ -46,11 +46,12 @@ domains:
     # pulseai's own repo. No-dotnet domain: app_project stays empty on purpose —
     # the gate skips the build/analyzer pass and hard-gates everything else
     # (.sh shellcheck, .json/.xml/.yml validity+hygiene, .md fences) so pulseai
-    # output MUST pass CICD before it reaches Crom.
+    # output MUST pass CICD before it reaches Crom. .github is in app_dirs so
+    # edits to the repo's own caller workflows are gated, not silently in-scope-free.
     repo: TysonX-Teoranta/tysonx-core
     solution: ""
     app_project: ""
-    app_dirs: "agents ai-command dev live ops to-laptop"
+    app_dirs: ".github agents ai-command dev live ops to-laptop"
     dev_base: origin/main
     status: active
   ci-templates:

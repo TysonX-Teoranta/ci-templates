@@ -59,7 +59,10 @@ require() { have "$1" || die "required tool not found on PATH: $1" 3; }
 
 # --- Registry reader ---------------------------------------------------------
 # Flat schema: `domains:` at column 0, each domain key at 2 spaces, each scalar
-# field at 4 spaces as `key: value`. Surrounding double-quotes are stripped.
+# field at 4 spaces as `key: value`. Surrounding double-quotes are stripped, as
+# are inline ` # comments` (outside quotes only) and trailing whitespace — a
+# `status: active  # note` line must parse as exactly `active`, or checks.sh
+# would treat the domain as not-active and skip the gate GREEN.
 
 # registry_file — echo the resolved registry path (die if missing).
 registry_file() {
@@ -92,6 +95,17 @@ domain_field() {
       sub(/^    [A-Za-z0-9_-]+:[[:space:]]*/, "", line)
       key = $1; sub(/:$/, "", key)
       if (key == field) {
+        # Strip the inline comment + trailing whitespace BEFORE unquoting, so
+        # `active  # note` and `"cicd .github" ` both yield their bare values.
+        # A quoted value is cut at its closing quote (a # inside the quotes is
+        # part of the value); a bare value drops ` #...` (whitespace-preceded,
+        # per YAML — a mid-token # like origin/ma#in is kept).
+        if (line ~ /^"/ && match(line, /^"[^"]*"/)) {
+          line = substr(line, RSTART, RLENGTH)
+        } else {
+          sub(/(^|[[:space:]])#.*$/, "", line)
+        }
+        sub(/[[:space:]]+$/, "", line)
         gsub(/^"|"$/, "", line)
         print line
         exit
