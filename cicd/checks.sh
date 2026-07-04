@@ -10,6 +10,7 @@
 # Fleet V3: strict mode, -v verbose, --dry-run, offline-testable via selftest.sh.
 
 # shellcheck source=lib/common.sh
+# shellcheck disable=SC1091  # sourced sibling is linted separately; -x not used in shell-lint
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
 show_help() {

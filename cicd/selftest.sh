@@ -9,6 +9,7 @@
 # Deterministic, zero-AI, no network. Safe to run anywhere bash + coreutils exist.
 
 # shellcheck source=lib/common.sh
+# shellcheck disable=SC1091  # sourced sibling is linted separately; -x not used in shell-lint
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
 [ "${1:-}" = "-v" ] && CICD_VERBOSE=1
