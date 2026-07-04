@@ -60,11 +60,20 @@ def is_code_line(txt):
         return False                       # import / namespace declaration
     return True
 
-# Test-project files are the tests themselves — coverage.runsettings excludes them
-# (IncludeTestAssembly=false), so demanding they be "covered" scores 0% and fails any
-# PR that adds tests. A path segment for a *.Tests/*.Test/*.IntegrationTests project,
-# the .NUnit.Tests/.Playwright projects, or a plain Tests/ dir carries no coverage burden.
+# Files that carry no unit-coverage burden and must not gate diff-coverage:
+#   * Test-project files (*.Tests/.NUnit.Tests/.IntegrationTests/.Playwright, plain
+#     Tests/) — the tests themselves, excluded from the coverage report
+#     (coverage.runsettings IncludeTestAssembly=false); counting them scores 0%.
+#   * The app entry point Program.cs / Startup.cs — top-level composition-root
+#     statements that boot the host and CANNOT be unit-tested (no seam to invoke
+#     them without standing up the whole app); they are exercised by integration/
+#     e2e runs, not unit coverage. A CLI-verb dispatch there would otherwise be
+#     permanently uncoverable and block any entry-point change.
 _TEST_PATH = re.compile(r"(^|/)([^/]*\.(Tests?|IntegrationTests|NUnit\.Tests|Playwright)|Tests?)/")
+_ENTRYPOINT = re.compile(r"(^|/)(Program|Startup)\.cs$")
+
+def excluded(path):
+    return bool(_TEST_PATH.search(path) or _ENTRYPOINT.search(path))
 
 changed = {}                               # file -> set(code line numbers)
 cur_file = None
@@ -72,7 +81,7 @@ new_ln = 0
 for line in diff.splitlines():
     if line.startswith("+++ b/"):
         path = line[6:]
-        cur_file = None if _TEST_PATH.search(path) else path
+        cur_file = None if excluded(path) else path
         if cur_file is not None:
             changed.setdefault(cur_file, set())
         continue
@@ -97,10 +106,17 @@ if not any(changed.values()):
 
 tree = ET.parse(cobertura)
 hit_by_file = {}  # path suffix match -> {line: hits}
+# A single source file can appear as MANY <class> entries (C# partial classes,
+# nested types, async state machines each get their own <class filename="X.cs">).
+# MERGE their line hits — taking the max — rather than letting the last entry
+# overwrite the earlier ones, or a covered method in an early entry vanishes and
+# reads as "no cobertura entry" (lodgers #294: DbSeeder.cs has 43 class entries).
 for cls in tree.getroot().iter("class"):
     fname = cls.get("filename", "")
-    lines = {int(l.get("number")): int(l.get("hits", "0")) for l in cls.iter("line")}
-    hit_by_file[fname] = lines
+    dest = hit_by_file.setdefault(fname, {})
+    for l in cls.iter("line"):
+        n = int(l.get("number"))
+        dest[n] = max(dest.get(n, 0), int(l.get("hits", "0")))
 
 def find_hits(path):
     for fname, lines in hit_by_file.items():
