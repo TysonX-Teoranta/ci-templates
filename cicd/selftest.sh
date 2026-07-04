@@ -133,6 +133,26 @@ XML
   git -C "$R" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm tests
   (cd "$R" && bash "$DC" --cobertura "$WORK/cov-hit.xml" --min 80 --base HEAD~2 >/dev/null 2>&1)
   ok "diffcov/test-files-excluded" "$?" "0"
+  # The app entry point Program.cs (top-level composition root, not unit-testable)
+  # must NOT gate — an uncovered CLI-verb dispatch there would otherwise block the PR.
+  printf 'if (args.Length > 0) { Run(); }\nreturn;\n' > "$R/Program.cs"
+  git -C "$R" add Program.cs
+  git -C "$R" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm program
+  (cd "$R" && bash "$DC" --cobertura "$WORK/cov-hit.xml" --min 80 --base HEAD~3 >/dev/null 2>&1)
+  ok "diffcov/entrypoint-excluded" "$?" "0"
+  # Partial classes / nested types / async state machines each emit their own
+  # <class filename="X.cs"> — their line hits must MERGE, not overwrite, or a covered
+  # method in an early entry vanishes (lodgers #294: DbSeeder.cs, 43 class entries).
+  # Here line 4 is covered ONLY in the first of two File.cs entries; the merge must
+  # still see it as covered.
+  cat > "$WORK/cov-partial.xml" <<'XML'
+<coverage><packages><package><classes>
+<class filename="File.cs"><lines><line number="4" hits="1"/></lines></class>
+<class filename="File.cs"><lines><line number="1" hits="1"/><line number="5" hits="1"/></lines></class>
+</classes></package></packages></coverage>
+XML
+  (cd "$R" && bash "$DC" --cobertura "$WORK/cov-partial.xml" --min 80 --base HEAD~3 >/dev/null 2>&1)
+  ok "diffcov/partial-class-hits-merge" "$?" "0"
 else
   warn "python3/git not present — skipping diff-coverage selftests"
 fi
