@@ -95,6 +95,37 @@ jobs:
             printf 'Auto-Submitted: auto-generated\n'
             printf 'Subject: [RC] %s %s finalised — ready for staging promote\n\n' "$DOMAIN" "$TAG"
             printf 'RC %s for %s is cut: live-ready by construction (scrubbed, zero-stub, hygiene-proven).\n' "$TAG" "$DOMAIN"
-            printf 'Artifact is on the GitHub prerelease. Promote when ready:\n'
-            printf '  cicd promote %s staging        (opens your TOTP gate)\n' "$DOMAIN"
+            printf 'This is the ONE open candidate for %s. Promote when ready:\n' "$DOMAIN"
+            printf '  cicd promote %s staging --real --go        (opens your TOTP gate)\n' "$DOMAIN"
+          } | /usr/sbin/sendmail -f crom@tysonx.ie -t
+
+  refused:
+    name: RC refused notice (essential mail — why the candidate was NOT cut)
+    needs: finalise
+    if: ${{ failure() && !inputs.dry_run }}
+    runs-on: [self-hosted, "${{ inputs.pulse_runner_label }}"]
+    timeout-minutes: 5
+    permissions:
+      actions: read   # pull the failed job's log to extract the gate errors
+    steps:
+      - name: Extract gate errors + send one mail via pulse sendmail
+        env:
+          DOMAIN: ${{ inputs.domain }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          REASONS=$(gh run view "$RUN_ID" -R "$REPO" --log-failed 2>/dev/null \
+            | grep -o '##\[error\].*' | sed 's/##\[error\]//' | awk '!seen[$0]++' | head -20)
+          [ -n "$REASONS" ] || REASONS='(could not extract gate errors — read the run log)'
+          {
+            printf 'To: crom@tysonx.ie\n'
+            printf 'From: crom@tysonx.ie\n'
+            printf 'Auto-Submitted: auto-generated\n'
+            printf 'Subject: [RC] %s REFUSED — finalise failed, no candidate cut\n\n' "$DOMAIN"
+            printf 'The RC finalise for %s was refused. No candidate exists; the slot is unchanged.\n\n' "$DOMAIN"
+            printf 'Why (gate errors):\n%s\n\n' "$REASONS"
+            printf 'Board: cicd rc %s\n' "$DOMAIN"
+            printf 'Run:   %s\n' "$RUN_URL"
           } | /usr/sbin/sendmail -f crom@tysonx.ie -t
