@@ -190,6 +190,15 @@ XML
 XML
   (cd "$R" && bash "$DC" --cobertura "$WORK/cov-partial.xml" --min 80 --base HEAD~3 >/dev/null 2>&1)
   ok "diffcov/partial-class-hits-merge" "$?" "0"
+  # Method/ctor declaration lines carry NO sequence points, so the instrumenter
+  # emits no entry for them and no test can ever cover them. A changed line ABSENT
+  # from an otherwise-instrumented file must not gate even at min=100, or any PR
+  # that adds/renames a method is permanently unmergeable (lodgers #300). Uncovered
+  # BODIES stay gated: they appear as 0-hit ENTRIES (diffcov/uncovered-tracked-fails).
+  printf 'int a=1;\n// why: context\n// more context\nint c=3;\nint b=2;\nvoid M(\n  int x)\n' > "$R/File.cs"
+  git -C "$R" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qam decl
+  (cd "$R" && bash "$DC" --cobertura "$WORK/cov-hit.xml" --min 100 --base HEAD~1 >/dev/null 2>&1)
+  ok "diffcov/declaration-lines-exempt" "$?" "0"
 else
   warn "python3/git not present — skipping diff-coverage selftests"
 fi
