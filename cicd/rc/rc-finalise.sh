@@ -50,6 +50,15 @@ DEV_BRANCH="${DEV_BASE#origin/}"
 
 cd "$WORKROOT" || die "cannot cd to workspace $WORKROOT" 3
 
+# --- ONE CANDIDATE AT A TIME (Crom, 2026-07-05) --------------------------------
+# At most one open prerelease candidate per repo. A real cut while one is open is
+# refused structurally — drop or supersede first (cicd rc <domain> drop|supersede).
+if [ "$DRY_RUN" != "1" ]; then
+  OPEN_RC="$(gh release list --limit 30 --json tagName,isPrerelease \
+    --jq '[.[] | select(.isPrerelease) | .tagName][0] // empty' 2>/dev/null)"
+  [ -n "$OPEN_RC" ] && die "candidate $OPEN_RC is already open — ONE candidate at a time; drop or supersede it first (cicd rc $DOMAIN drop|supersede)" 2
+fi
+
 # --- Branch guard: RCs finalise from the dev branch head, nothing else --------
 HEAD_SHA="$(git rev-parse HEAD)"
 DEV_SHA="$(git rev-parse "origin/$DEV_BRANCH" 2>/dev/null || true)"
