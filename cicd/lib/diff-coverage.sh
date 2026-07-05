@@ -141,13 +141,23 @@ def find_hits(path):
     return best
 
 # Every remaining changed line is executable code. Covered = cobertura reports a
-# hit>0 for it. A code line the report does not mention (whole file absent, or a
-# line the tool did not instrument) counts as UNCOVERED — a new untested file must
-# not pass vacuously. Comment/blank lines were already excluded above by content.
+# hit>0 for it. Two distinct "not covered" cases:
+#   * File ABSENT from the report (never loaded by any test): every changed line
+#     counts UNCOVERED — a new untested file must not pass vacuously.
+#   * File PRESENT but the line has NO entry: the instrumenter itself declares the
+#     line non-executable — method/ctor declaration headers and their parameter
+#     continuation lines carry no sequence points, so NO test can ever hit them.
+#     Demanding them made any PR that adds or renames a method permanently
+#     unmergeable at min=100 (lodgers #300: five signature lines of fully-tested
+#     methods were the only misses). Excluded, same class as comments/braces.
+#     Untested method BODIES are unaffected: their lines appear as 0-hit entries
+#     and are still demanded.
 total, covered, unmatched = 0, 0, []
 for path, lns in changed.items():
     hits = find_hits(path)
     for ln in lns:
+        if hits and ln not in hits:
+            continue                       # instrumented file, non-executable line
         total += 1
         if hits is not None and hits.get(ln, 0) > 0:
             covered += 1
@@ -158,7 +168,7 @@ pct = (covered / total * 100) if total else 100.0
 if verbose:
     print(f"diff-coverage: {covered}/{total} changed lines covered ({pct:.1f}%)")
     if unmatched:
-        print(f"  {len(unmatched)} changed lines had no cobertura entry (new/untested files)")
+        print(f"  {len(unmatched)} changed lines uncovered (0 hits, or file never loaded by any test)")
 
 if pct < min_pct:
     print(f"::error::diff-coverage {pct:.1f}% below minimum {min_pct}%")

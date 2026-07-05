@@ -77,13 +77,28 @@ jobs:
           CICD_REGISTRY=.ci-templates/domains.yml .ci-templates/cicd/rc/rc-finalise.sh
 
   notify:
-    name: RC finalised notice (essential mail)
+    name: RC finalised notice (essential mail + close the refusal loop)
     needs: finalise
     if: ${{ success() && !inputs.dry_run }}
     runs-on: [self-hosted, "${{ inputs.pulse_runner_label }}"]
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      issues: write   # a clean cut closes any open rc-refusal loop issue
     steps:
+      - name: Close any open rc-refusal loop issue (cut is clean — loop complete)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.finalise.outputs.rc_tag }}
+          DOMAIN: ${{ inputs.domain }}
+        run: |
+          gh issue list -R "$REPO" --label rc-refusal --state open --json number -q '.[].number' 2>/dev/null \
+            | while read -r n; do
+                [ -n "$n" ] || continue
+                gh issue close "$n" -R "$REPO" --reason completed \
+                  --comment "Resolved — candidate $TAG cut clean (scrubbed, zero-stub, hygiene-proven)."
+              done
+          rm -f "$HOME/crom-queue/pending/RC-DECISION-$DOMAIN.md"
       - name: Send one mail via pulse sendmail
         env:
           DOMAIN: ${{ inputs.domain }}
@@ -95,6 +110,87 @@ jobs:
             printf 'Auto-Submitted: auto-generated\n'
             printf 'Subject: [RC] %s %s finalised — ready for staging promote\n\n' "$DOMAIN" "$TAG"
             printf 'RC %s for %s is cut: live-ready by construction (scrubbed, zero-stub, hygiene-proven).\n' "$TAG" "$DOMAIN"
-            printf 'Artifact is on the GitHub prerelease. Promote when ready:\n'
-            printf '  cicd promote %s staging        (opens your TOTP gate)\n' "$DOMAIN"
+            printf 'This is the ONE open candidate for %s. Promote when ready:\n' "$DOMAIN"
+            printf '  cicd promote %s staging --real --go        (opens your TOTP gate)\n' "$DOMAIN"
           } | /usr/sbin/sendmail -f crom@tysonx.ie -t
+
+  refused:
+    # RC LOOP, not a waterfall (Crom, 2026-07-05): a refusal loops the reasons back
+    # into the dev workbench as ONE open 'rc-refusal' issue on the product repo.
+    # Dev PRs fix + close it; the repo's rc-reloop workflow then re-orders the cut
+    # automatically. A clean cut auto-closes any leftover refusal issue (notify job).
+    name: RC refused — loop reasons back to dev as an issue (+ essential mail)
+    needs: finalise
+    if: ${{ failure() && !inputs.dry_run }}
+    runs-on: [self-hosted, "${{ inputs.pulse_runner_label }}"]
+    timeout-minutes: 5
+    permissions:
+      actions: read   # pull the failed job's log to extract the gate errors
+      issues: write   # file/refresh the rc-refusal loop issue
+    steps:
+      - name: Extract gate errors → rc-refusal issue → one mail via pulse sendmail
+        env:
+          DOMAIN: ${{ inputs.domain }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          REASONS=$(gh run view "$RUN_ID" -R "$REPO" --log-failed 2>/dev/null \
+            | grep -o '##\[error\].*' | sed 's/##\[error\]//' | awk '!seen[$0]++' | head -20)
+          [ -n "$REASONS" ] || REASONS='(could not extract gate errors — read the run log)'
+
+          gh label create rc-refusal -R "$REPO" \
+            --description 'RC finalise refused — fix on dev, closing this issue re-orders the cut' \
+            --color B60205 2>/dev/null || true
+          BODY_FILE=$(mktemp)
+          {
+            printf 'RC finalise for **%s** was refused by the hygiene gates. No candidate was cut; the slot is unchanged.\n\n' "$DOMAIN"
+            printf '## Gate errors (fix each on `%s-dev` via normal dev PRs)\n\n' "$DOMAIN"
+            printf '%s\n' "$REASONS" | while IFS= read -r l; do [ -n "$l" ] && printf -- '- [ ] %s\n' "$l"; done
+            printf '\nRun: %s\n\n' "$RUN_URL"
+            printf '**The loop is hands-free:** open the fix PR(s) into `%s-dev` with `Fixes #<this issue number>` in the description — automerge lands a green PR, the merge auto-closes this issue, and closing it auto-re-orders the RC cut. A clean cut mails the finalised notice.\n' "$DOMAIN"
+          } > "$BODY_FILE"
+          NUM=$(gh issue list -R "$REPO" --label rc-refusal --state open --json number -q '.[0].number' 2>/dev/null)
+          if [ -n "$NUM" ]; then
+            gh issue edit "$NUM" -R "$REPO" --body-file "$BODY_FILE" \
+              --title "[RC refused] $DOMAIN — hygiene gates blocked the cut"
+            gh issue comment "$NUM" -R "$REPO" --body "Refused again — reasons refreshed above. Run: $RUN_URL"
+            ISSUE_URL=$(gh issue view "$NUM" -R "$REPO" --json url -q .url)
+          else
+            ISSUE_URL=$(gh issue create -R "$REPO" --label rc-refusal \
+              --title "[RC refused] $DOMAIN — hygiene gates blocked the cut" \
+              --body-file "$BODY_FILE")
+            NUM="${ISSUE_URL##*/}"
+          fi
+          rm -f "$BODY_FILE"
+
+          # Unresolvable-by-dev refusals — a gate that declares 'no clearance path'
+          # (e.g. zero-stub: implement the real feature or pull it from the RC) is a
+          # PRODUCT decision. Elevate: label the loop issue + drop a card into Crom's
+          # decisions queue (this job runs on pulse, so the write is local) + the ONE
+          # essential mail. Dev-resolvable refusals send NO mail — the hands-free loop
+          # (issue → fix PR with Fixes #N → automerge → auto re-cut) handles them, and
+          # they show on the rc board + topdog. Email policy: essentials only.
+          if printf '%s' "$REASONS" | grep -qi 'no clearance path'; then
+            gh label create crom-decision -R "$REPO" \
+              --description 'blocked on a Crom product decision' --color 5319E7 2>/dev/null || true
+            gh issue edit "$NUM" -R "$REPO" --add-label crom-decision
+            mkdir -p "$HOME/crom-queue/pending"
+            {
+              printf '# RC decision needed — %s: refusal has no dev clearance path\n' "$DOMAIN"
+              printf '_Decide, land the outcome on %s-dev, then close the loop issue (auto re-cut). A clean cut clears this card._\n\n' "$DOMAIN"
+              printf '%s\n\n' "$REASONS"
+              printf 'Loop issue: %s\nRun: %s\n' "$ISSUE_URL" "$RUN_URL"
+            } > "$HOME/crom-queue/pending/RC-DECISION-$DOMAIN.md"
+            {
+              printf 'To: crom@tysonx.ie\n'
+              printf 'From: crom@tysonx.ie\n'
+              printf 'Auto-Submitted: auto-generated\n'
+              printf 'Subject: [RC] %s UNRESOLVABLE — needs your decision\n\n' "$DOMAIN"
+              printf 'The RC finalise for %s was refused and at least one gate has no dev clearance path.\n' "$DOMAIN"
+              printf 'The decision card is in topdog (decisions queue). No candidate exists; the slot is unchanged.\n\n'
+              printf 'Why (gate errors):\n%s\n\n' "$REASONS"
+              printf 'Loop issue: %s\nBoard: cicd rc %s\nRun: %s\n' "$ISSUE_URL" "$DOMAIN" "$RUN_URL"
+            } | /usr/sbin/sendmail -f crom@tysonx.ie -t
+          fi
