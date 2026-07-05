@@ -149,7 +149,7 @@ jobs:
             printf '## Gate errors (fix each on `%s-dev` via normal dev PRs)\n\n' "$DOMAIN"
             printf '%s\n' "$REASONS" | while IFS= read -r l; do [ -n "$l" ] && printf -- '- [ ] %s\n' "$l"; done
             printf '\nRun: %s\n\n' "$RUN_URL"
-            printf '**The loop:** land the fixes on `%s-dev` (reference this issue), then CLOSE this issue as completed — closing it automatically re-orders the RC cut. A clean cut closes it for you and mails the finalised notice.\n' "$DOMAIN"
+            printf '**The loop is hands-free:** open the fix PR(s) into `%s-dev` with `Fixes #<this issue number>` in the description — automerge lands a green PR, the merge auto-closes this issue, and closing it auto-re-orders the RC cut. A clean cut mails the finalised notice.\n' "$DOMAIN"
           } > "$BODY_FILE"
           NUM=$(gh issue list -R "$REPO" --label rc-refusal --state open --json number -q '.[0].number' 2>/dev/null)
           if [ -n "$NUM" ]; then
@@ -168,8 +168,10 @@ jobs:
           # Unresolvable-by-dev refusals — a gate that declares 'no clearance path'
           # (e.g. zero-stub: implement the real feature or pull it from the RC) is a
           # PRODUCT decision. Elevate: label the loop issue + drop a card into Crom's
-          # decisions queue (this job runs on pulse, so the write is local). A clean
-          # cut clears the card; deciding = fix on dev, then close the loop issue.
+          # decisions queue (this job runs on pulse, so the write is local) + the ONE
+          # essential mail. Dev-resolvable refusals send NO mail — the hands-free loop
+          # (issue → fix PR with Fixes #N → automerge → auto re-cut) handles them, and
+          # they show on the rc board + topdog. Email policy: essentials only.
           if printf '%s' "$REASONS" | grep -qi 'no clearance path'; then
             gh label create crom-decision -R "$REPO" \
               --description 'blocked on a Crom product decision' --color 5319E7 2>/dev/null || true
@@ -181,16 +183,14 @@ jobs:
               printf '%s\n\n' "$REASONS"
               printf 'Loop issue: %s\nRun: %s\n' "$ISSUE_URL" "$RUN_URL"
             } > "$HOME/crom-queue/pending/RC-DECISION-$DOMAIN.md"
+            {
+              printf 'To: crom@tysonx.ie\n'
+              printf 'From: crom@tysonx.ie\n'
+              printf 'Auto-Submitted: auto-generated\n'
+              printf 'Subject: [RC] %s UNRESOLVABLE — needs your decision\n\n' "$DOMAIN"
+              printf 'The RC finalise for %s was refused and at least one gate has no dev clearance path.\n' "$DOMAIN"
+              printf 'The decision card is in topdog (decisions queue). No candidate exists; the slot is unchanged.\n\n'
+              printf 'Why (gate errors):\n%s\n\n' "$REASONS"
+              printf 'Loop issue: %s\nBoard: cicd rc %s\nRun: %s\n' "$ISSUE_URL" "$DOMAIN" "$RUN_URL"
+            } | /usr/sbin/sendmail -f crom@tysonx.ie -t
           fi
-
-          {
-            printf 'To: crom@tysonx.ie\n'
-            printf 'From: crom@tysonx.ie\n'
-            printf 'Auto-Submitted: auto-generated\n'
-            printf 'Subject: [RC] %s REFUSED — reasons looped to dev as an issue\n\n' "$DOMAIN"
-            printf 'The RC finalise for %s was refused. No candidate exists; the slot is unchanged.\n\n' "$DOMAIN"
-            printf 'Why (gate errors):\n%s\n\n' "$REASONS"
-            printf 'Loop issue (fix on dev, close = auto re-cut):\n  %s\n\n' "$ISSUE_URL"
-            printf 'Board: cicd rc %s\n' "$DOMAIN"
-            printf 'Run:   %s\n' "$RUN_URL"
-          } | /usr/sbin/sendmail -f crom@tysonx.ie -t
