@@ -91,7 +91,10 @@ jobs:
             echo "SKIP: draft PR."
             exit 0
           fi
-          if printf '%s' "$title" | grep -qiE 'release|promote'; then
+          # Word-boundary match: promotion PRs are titled "Release …"/"Promote …"; a bare
+          # substring also caught ordinary prose ("chown releases…", lodgers#312) and
+          # silently parked routine dev PRs.
+          if printf '%s' "$title" | grep -qiE '\brelease\b|\bpromote\b'; then
             echo "SKIP: Release/Promote-titled PR — human/TOTP gate, never auto-merged."
             exit 0
           fi
