@@ -36,19 +36,27 @@ domains:
     hygiene: required
     rid: linux-x64
   kukuln:
+    # Product launch is on hold; the CICD dev + RC lanes are active (parity with
+    # lodgers, Crom order 2026-07-07) so the repo stays gate-proven and cuttable.
     repo: TysonX-Teoranta/kukuln
-    solution: ""
-    app_project: ""
-    app_dirs: ""
-    dev_base: ""
-    status: on-hold
+    solution: Kukuln.slnx
+    app_project: src/KukulnSite/KukulnSite.csproj
+    app_dirs: "src"
+    dev_base: origin/kukuln-dev
+    status: active
+    test_project: Kukuln.slnx
+    hygiene: required
+    rid: linux-x64
   tysonx:
     repo: TysonX-Teoranta/tysonx
-    solution: ""
-    app_project: ""
-    app_dirs: ""
-    dev_base: ""
-    status: stub
+    solution: Tysonx.slnx
+    app_project: src/TysonxSite/TysonxSite.csproj
+    app_dirs: "src"
+    dev_base: origin/tysonx-dev
+    status: active
+    test_project: tests/TysonxSite.Tests/TysonxSite.Tests.csproj
+    hygiene: required
+    rid: linux-x64
   tysonx-core:
     # pulseai's own repo. No-dotnet domain: app_project stays empty on purpose —
     # the gate skips the build/analyzer pass and hard-gates everything else
