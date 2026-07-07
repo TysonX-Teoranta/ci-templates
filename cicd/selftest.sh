@@ -177,6 +177,16 @@ XML
   git -C "$R" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm program
   (cd "$R" && bash "$DC" --cobertura "$WORK/cov-hit.xml" --min 80 --base HEAD~3 >/dev/null 2>&1)
   ok "diffcov/entrypoint-excluded" "$?" "0"
+  # CI tooling under .github/ (gate scripts, file-based tool .cs run by the spine)
+  # is never loaded by the app test host — an uncovered change there must not gate.
+  mkdir -p "$R/.github/scripts/ci"
+  printf 'var x = 1;
+Console.WriteLine(x);
+' > "$R/.github/scripts/ci/tool-scan.cs"
+  git -C "$R" add .github
+  git -C "$R" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm citool
+  (cd "$R" && bash "$DC" --cobertura "$WORK/cov-hit.xml" --min 80 --base HEAD~4 >/dev/null 2>&1)
+  ok "diffcov/ci-tooling-excluded" "$?" "0"
   # Partial classes / nested types / async state machines each emit their own
   # <class filename="X.cs"> — their line hits must MERGE, not overwrite, or a covered
   # method in an early entry vanishes (lodgers #294: DbSeeder.cs, 43 class entries).
@@ -188,7 +198,7 @@ XML
 <class filename="File.cs"><lines><line number="1" hits="1"/><line number="5" hits="1"/></lines></class>
 </classes></package></packages></coverage>
 XML
-  (cd "$R" && bash "$DC" --cobertura "$WORK/cov-partial.xml" --min 80 --base HEAD~3 >/dev/null 2>&1)
+  (cd "$R" && bash "$DC" --cobertura "$WORK/cov-partial.xml" --min 80 --base HEAD~4 >/dev/null 2>&1)
   ok "diffcov/partial-class-hits-merge" "$?" "0"
   # Method/ctor declaration lines carry NO sequence points, so the instrumenter
   # emits no entry for them and no test can ever cover them. A changed line ABSENT

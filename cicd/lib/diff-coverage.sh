@@ -74,12 +74,17 @@ def is_code_line(txt):
 #     unit tests), plus *.Designer.cs / *ModelSnapshot.cs / *.g.cs. Mirrors the
 #     analyzer gate's generated-code exclusion (parse-diagnostics.sh); without
 #     this, any migration hotfix scores 0% and is permanently unmergeable.
+#   * CI tooling under .github/ — gate scripts and file-based tool programs
+#     (e.g. ci/il-type-scan.cs) run by the CICD spine itself, never loaded by
+#     the app's test host; counting them scores 0% and blocks any gate change.
 _TEST_PATH = re.compile(r"(^|/)([^/]*\.(Tests?|IntegrationTests|NUnit\.Tests|Playwright)|Tests?)/")
 _ENTRYPOINT = re.compile(r"(^|/)(Program|Startup)\.cs$")
 _GENERATED = re.compile(r"(^|/)Migrations/|\.Designer\.cs$|ModelSnapshot\.cs$|\.g\.cs$")
+_CI_TOOLING = re.compile(r"^\.github/")
 
 def excluded(path):
-    return bool(_TEST_PATH.search(path) or _ENTRYPOINT.search(path) or _GENERATED.search(path))
+    return bool(_TEST_PATH.search(path) or _ENTRYPOINT.search(path)
+                or _GENERATED.search(path) or _CI_TOOLING.search(path))
 
 changed = {}                               # file -> set(code line numbers)
 cur_file = None
