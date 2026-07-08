@@ -136,28 +136,29 @@ tar -C "$PUBLISH_DIR" -czf "$STAGE_DIR/$ARTIFACT" .
 ART_SHA="$(sha256sum "$STAGE_DIR/$ARTIFACT" | awk '{print $1}')"
 DOTNET_SDK="$(dotnet --version 2>/dev/null || echo unknown)"
 
-# --- EF migrations bundle: schema ships WITH the artifact -----------------------
-# Staging/live receive built artifacts (no SDK, no source) — the only live-grade way
-# to apply the RC's schema is a self-contained migrations bundle cut here, from the
-# same source SHA. Domains declare db_project (+ optional db_context) in domains.yml;
-# domains without one skip the leg. The staging receiver rehearses the bundle on a
-# probe CLONE of the staging DB before any acceptance, then applies it for real.
+# --- EF migrations script: schema ships WITH the artifact -----------------------
+# Staging/live receive built artifacts (no SDK, no source) — the RC carries its schema
+# as an IDEMPOTENT SQL script cut here from the same source SHA (arch-independent;
+# ef's self-contained bundles cannot cross-cut x64 from the arm64 runner). Domains
+# declare db_project (+ optional db_context) in domains.yml; domains without one skip
+# the leg. The staging receiver rehearses the script on a probe CLONE of the staging
+# DB before any acceptance, then applies it for real via psql as the app role.
 DB_PROJECT="$(domain_field "$DOMAIN" db_project)"
 DB_CONTEXT="$(domain_field "$DOMAIN" db_context)"
-MIGBUNDLE="" MIG_SHA=""
+MIGSCRIPT="" MIG_SHA=""
 if [ -n "$DB_PROJECT" ]; then
-  log "migrations bundle: $DB_PROJECT${DB_CONTEXT:+ (context $DB_CONTEXT)}"
+  log "migrations script (idempotent): $DB_PROJECT${DB_CONTEXT:+ (context $DB_CONTEXT)}"
   EFTOOL="$WORKROOT/.eftool"
   [ -x "$EFTOOL/dotnet-ef" ] || dotnet tool install dotnet-ef --tool-path "$EFTOOL" >/dev/null \
     || die "dotnet-ef install failed" 1
-  MIGBUNDLE="$DOMAIN-$TAG-efbundle"
-  "$EFTOOL/dotnet-ef" migrations bundle \
+  MIGSCRIPT="$DOMAIN-$TAG-migrations.sql"
+  "$EFTOOL/dotnet-ef" migrations script --idempotent \
     --project "$DB_PROJECT" --startup-project "$APP_PROJECT" \
-    --configuration Release --runtime "$RID" --self-contained \
+    --configuration Release \
     ${DB_CONTEXT:+--context "$DB_CONTEXT"} \
-    --output "$STAGE_DIR/$MIGBUNDLE" --force \
-    || die "migrations bundle failed — RC refused (the schema must ship with the artifact)" 1
-  MIG_SHA="$(sha256sum "$STAGE_DIR/$MIGBUNDLE" | awk '{print $1}')"
+    --output "$STAGE_DIR/$MIGSCRIPT" \
+    || die "migrations script failed — RC refused (the schema must ship with the artifact)" 1
+  MIG_SHA="$(sha256sum "$STAGE_DIR/$MIGSCRIPT" | awk '{print $1}')"
 fi
 
 jq -n \
@@ -165,14 +166,14 @@ jq -n \
   --arg sha "$HEAD_SHA" --arg branch "$DEV_BRANCH" --arg rid "$RID" \
   --arg built "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sdk "$DOTNET_SDK" \
   --arg artifact "$ARTIFACT" --arg asha "$ART_SHA" \
-  --arg mig "$MIGBUNDLE" --arg migsha "$MIG_SHA" \
+  --arg mig "$MIGSCRIPT" --arg migsha "$MIG_SHA" \
   '{schema: 1, domain: $domain, tag: $tag, version: $version, source_sha: $sha,
     source_branch: $branch, rid: $rid, built_utc: $built, dotnet_sdk: $sdk,
     artifact: $artifact, artifact_sha256: $asha,
-    migrations_bundle: $mig, migrations_sha256: $migsha,
+    migrations_script: $mig, migrations_sha256: $migsha,
     stubs: "none (zero-stub policy)", hygiene: "passed"}' > "$STAGE_DIR/manifest.json"
-( cd "$STAGE_DIR" && sha256sum "$ARTIFACT" manifest.json ${MIGBUNDLE:+"$MIGBUNDLE"} > sha256sums.txt )
-log "artifact: $ARTIFACT ($ART_SHA)${MIGBUNDLE:+ + $MIGBUNDLE ($MIG_SHA)}"
+( cd "$STAGE_DIR" && sha256sum "$ARTIFACT" manifest.json ${MIGSCRIPT:+"$MIGSCRIPT"} > sha256sums.txt )
+log "artifact: $ARTIFACT ($ART_SHA)${MIGSCRIPT:+ + $MIGSCRIPT ($MIG_SHA)}"
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
   { echo "rc_tag=$TAG"; echo "version=$VERSION"; echo "artifact=$ARTIFACT"; } >> "$GITHUB_OUTPUT"
@@ -198,6 +199,6 @@ NOTES="$STAGE_DIR/notes.md"
 gh release create "$TAG" --prerelease \
   --title "$DOMAIN $TAG (RC artifact)" --notes-file "$NOTES" \
   "$STAGE_DIR/$ARTIFACT" "$STAGE_DIR/manifest.json" "$STAGE_DIR/sha256sums.txt" \
-  ${MIGBUNDLE:+"$STAGE_DIR/$MIGBUNDLE"} \
+  ${MIGSCRIPT:+"$STAGE_DIR/$MIGSCRIPT"} \
   || die "release create failed" 1
 log "RC finalised: $TAG (prerelease + artifact published)"
