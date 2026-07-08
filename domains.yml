@@ -17,6 +17,10 @@
 #   hygiene      "required" = the repo MUST ship .github/scripts/ci/rc-hygiene.sh
 #                (scrub|source|publish contract) or rc-finalise refuses to cut
 #   rid          publish runtime identifier for the RC artifact (default linux-x64)
+#   db_project   .csproj holding the EF migrations — rc-finalise cuts a self-contained
+#                migrations bundle release asset from it (absent = domain has no
+#                staging/live DB schema to ship; the receiver's DB legs auto-skip)
+#   db_context   DbContext for the bundle (absent = the project's single context)
 #
 # The gate does NOT store where each repo is checked out — that is environment-specific.
 # Point it at the product working tree with `checks.sh --repo-root <path>` (or the
@@ -35,6 +39,8 @@ domains:
     test_project: LodgersSite.NUnit.Tests/LodgersSite.NUnit.Tests.csproj
     hygiene: required
     rid: linux-x64
+    db_project: LodgersSite/LodgersSite.csproj
+    db_context: ApplicationDbContext
   kukuln:
     # Product launch is on hold; the CICD dev + RC lanes are active (parity with
     # lodgers, Crom order 2026-07-07) so the repo stays gate-proven and cuttable.

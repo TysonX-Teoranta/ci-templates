@@ -5,9 +5,14 @@
 #   resolve — pin the RC tag + read its manifest (context for the gate alert)
 #   gate    — Crom TOTP via the pulse gate harness (gate-wait.sh); the TOTP IS the
 #             gate, no typed confirm phrase. Skippable ONLY for dry runs.
-#   stage   — download the release asset with the workflow token, sha256-verify,
+#   stage   — download the release assets with the workflow token, sha256-verify,
 #             ship over the pulse→staging spoke, invoke the staging receiver.
-#             dry_run unpacks to a sandbox and never touches symlink/service.
+#             Staging "is" live: the receiver reruns a full production-readiness
+#             RECHECK battery; a refusal REJECTS THE ENTIRE RC (release+tag dropped,
+#             reasons looped back to dev as an rc-refusal+staging-reject issue,
+#             3 consecutive rejections escalate to Crom). Needs contents:write +
+#             issues:write from the caller for the reject path.
+#             dry_run runs the battery sandboxed and never touches symlink/service.
 #   outcome — one mail on real promotes only (essential); ledger always.
 name: _promote-staging
 on:
@@ -29,6 +34,11 @@ on:
         default: true
       skip_gate:
         description: "skip the TOTP gate — honoured ONLY when dry_run is true"
+        required: false
+        type: boolean
+        default: false
+      force_reject:
+        description: "lane self-test: inject a synthetic battery failure (dry runs only)"
         required: false
         type: boolean
         default: false
@@ -82,18 +92,20 @@ jobs:
           (needs.gate.result == 'success' ||
            (inputs.dry_run && inputs.skip_gate && needs.gate.result == 'skipped')) }}
     runs-on: [self-hosted, "${{ inputs.pulse_runner_label }}"]
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
-      contents: read
+      contents: write   # reject path deletes the refused RC's release + tag
+      issues: write     # reject path files/updates the dev loop issue
     steps:
-      - name: Download, verify, ship, receive
+      - name: Download, verify, ship, receive (recheck battery on staging)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           "$HOME/tysonx-core/ops/cicd/promote-stage.sh" \
             --domain "${{ inputs.domain }}" --repo "${{ github.repository }}" \
             --rc-tag "${{ needs.resolve.outputs.rc_tag }}" \
-            ${{ inputs.dry_run && '--dry-run' || '' }}
+            ${{ inputs.dry_run && '--dry-run' || '' }} \
+            ${{ inputs.dry_run && inputs.force_reject && '--force-reject' || '' }}
 
   outcome:
     name: Outcome (ledger always, mail on real promotes)
