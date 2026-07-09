@@ -129,6 +129,31 @@ for cls in tree.getroot().iter("class"):
         n = int(l.get("number"))
         dest[n] = max(dest.get(n, 0), int(l.get("hits", "0")))
 
+_TYPE_DECL = re.compile(r"\b(class|struct|record|enum|interface)\s+\w")
+_LINE_COMMENT = re.compile(r"//[^\n]*")
+_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
+
+def declaration_only_file(path):
+    # Enum- and interface-only files compile to ZERO sequence points — the
+    # instrumenter can never list them, so under the never-loaded rule below any
+    # changed enum member or interface signature is permanently uncoverable and
+    # blocks the PR at min=100 (lodgers #367: a new enum member + two interface
+    # method signatures were 3 of the 4 misses). Same class as declaration lines
+    # (lodgers #300). Skip a never-loaded file ONLY when it declares at least one
+    # type and every declared type is enum/interface; files with class/struct/
+    # record types (or no type declaration at all, e.g. the selftest's top-level
+    # statements) stay strict. Known narrow fail-open: an interface file whose
+    # default method impls are untested skips too — accepted, StyleCop style here
+    # bans default interface members.
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            src = fh.read()
+    except OSError:
+        return False
+    src = _BLOCK_COMMENT.sub("", _LINE_COMMENT.sub("", src))
+    kinds = {m.group(1) for m in _TYPE_DECL.finditer(src)}
+    return bool(kinds) and kinds <= {"enum", "interface"}
+
 def find_hits(path):
     # Suffix matching lines up absolute cobertura filenames with repo-relative
     # diff paths, but it must align on a `/` boundary — a bare endswith would
@@ -160,6 +185,8 @@ def find_hits(path):
 total, covered, unmatched = 0, 0, []
 for path, lns in changed.items():
     hits = find_hits(path)
+    if hits is None and declaration_only_file(path):
+        continue                           # enum/interface-only file: no sequence points exist
     for ln in lns:
         if hits and ln not in hits:
             continue                       # instrumented file, non-executable line
