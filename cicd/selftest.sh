@@ -209,6 +209,23 @@ XML
   git -C "$R" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qam decl
   (cd "$R" && bash "$DC" --cobertura "$WORK/cov-hit.xml" --min 100 --base HEAD~1 >/dev/null 2>&1)
   ok "diffcov/declaration-lines-exempt" "$?" "0"
+  # Enum- and interface-only files compile to ZERO sequence points, so they can
+  # never appear in a coverage report; under the never-loaded rule a changed enum
+  # member or interface signature was permanently uncoverable at min=100
+  # (lodgers #367). Such files must not gate…
+  printf 'public enum Status\n{\n    Alpha = 1,\n    Beta = 2,\n}\n' > "$R/Status.cs"
+  printf 'public interface IThing\n{\n    string Name(int id);\n}\n' > "$R/IThing.cs"
+  git -C "$R" add Status.cs IThing.cs
+  git -C "$R" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm enumiface
+  (cd "$R" && bash "$DC" --cobertura "$WORK/cov-hit.xml" --min 100 --base HEAD~1 >/dev/null 2>&1)
+  ok "diffcov/enum-interface-files-exempt" "$?" "0"
+  # …while a never-loaded file containing a CLASS stays strict (new untested class
+  # must not pass vacuously), even when an enum shares the file.
+  printf 'public enum Kind\n{\n    A = 1,\n}\npublic class Widget\n{\n    public int N() { return 1; }\n}\n' > "$R/Widget.cs"
+  git -C "$R" add Widget.cs
+  git -C "$R" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm widget
+  (cd "$R" && bash "$DC" --cobertura "$WORK/cov-hit.xml" --min 100 --base HEAD~1 >/dev/null 2>&1)
+  ok "diffcov/never-loaded-class-still-strict" "$?" "1"
 else
   warn "python3/git not present — skipping diff-coverage selftests"
 fi
