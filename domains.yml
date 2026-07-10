@@ -7,6 +7,12 @@
 #
 # Fields:
 #   repo         org/name of the product repository
+#   type         static | dotnet  (absent = dotnet — every legacy entry stays dotnet).
+#                A `static` domain ships no .csproj/.sln: the gate skips the dotnet
+#                build/analyzer pass (same effect as an empty app_project) and the
+#                deploy provisioner serves the files straight from nginx instead of a
+#                kestrel/dotnet systemd unit. Its version lives in a top-level VERSION
+#                file (fleet vX.Y.Z tag lineage), not a Directory.Build.props <Version>.
 #   solution     .sln in the repo (reference; the gate builds app_project, not the sln)
 #   app_project  entry .csproj the gate compiles (transitive refs only) ("" = TBD)
 #   app_dirs     space-separated app (non-test) source roots — diff-scope filter +
@@ -85,5 +91,25 @@ domains:
     solution: ""
     app_project: ""
     app_dirs: "cicd .github"
+    dev_base: origin/main
+    status: active
+  majorfeen:
+    # majorFeen band holding site — STATIC (type:static, no .NET). Was piggybacking
+    # kukuln's dev holding path; this entry gives it its own registry identity so the
+    # deterministic gate runs against its own repo. app_project stays empty so the
+    # gate skips the dotnet build/analyzer pass; app_dirs "." scopes the whole repo
+    # for the hygiene sweep (HTML/CSS carry no .sh/.json/.yml/.md, so the gate is a
+    # green no-op today — it is wired and ready, not enforcing dotnet rules on a
+    # static site). Version = the repo's top-level VERSION file (currently 0.0.2),
+    # fleet vX.Y.Z tag lineage. NOTE: dev_base is origin/main because the repo has no
+    # *-dev branch yet — adopting the majorfeen-dev branch model + protection is a
+    # coordinated follow-up (see the onboarding runbook). The RC artifact lane
+    # (rc-finalise) is dotnet-only today and refuses an empty app_project; a static
+    # release lane is a separate, coordinated change.
+    repo: TysonX-Teoranta/majorfeen
+    type: static
+    solution: ""
+    app_project: ""
+    app_dirs: "."
     dev_base: origin/main
     status: active
