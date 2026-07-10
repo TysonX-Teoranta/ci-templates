@@ -51,6 +51,17 @@ on:
         type: boolean
         default: false
 
+# Serialize the gate on the shared dev box. All zero-tolerance runs execute on the
+# single self-hosted [self-hosted, tysonx-dev] runner and the test step is --no-build
+# (it skips the dev build-mutex), so two PRs' suites can run at once, starve each
+# other's CPU, and both blow the per-step timeout — the whole reason PRs were failing
+# on the clock rather than on a real defect. A CONSTANT group (not github.ref) forces
+# one run at a time across every calling repo/branch; cancel-in-progress:false never
+# kills a live gating run (a newer trigger queues behind it, GitHub keeps depth-1).
+concurrency:
+  group: zero-tolerance-tysonx-dev
+  cancel-in-progress: false
+
 jobs:
   zero-tolerance:
     if: github.event_name == 'pull_request'
