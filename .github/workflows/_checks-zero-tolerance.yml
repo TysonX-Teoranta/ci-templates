@@ -51,22 +51,27 @@ on:
         type: boolean
         default: false
 
-# Serialize the gate on the shared dev box. All zero-tolerance runs execute on the
-# single self-hosted [self-hosted, tysonx-dev] runner and the test step is --no-build
-# (it skips the dev build-mutex), so two PRs' suites can run at once, starve each
-# other's CPU, and both blow the per-step timeout — the whole reason PRs were failing
-# on the clock rather than on a real defect. A CONSTANT group (not github.ref) forces
-# one run at a time across every calling repo/branch; cancel-in-progress:false never
-# kills a live gating run (a newer trigger queues behind it, GitHub keeps depth-1).
+# Concurrency: PER-PR group (was a single constant group = 1 run fleet-wide, which made
+# concurrent PR triggers cancel each other's pending run — a throughput floor and a
+# frequent "no movement" stall). Per-ref lets DISTINCT PRs run concurrently, bounded to
+# 2 by the two [self-hosted, tysonx-dev] runners; re-pushes to the SAME PR still queue
+# (cancel-in-progress:false, GitHub depth-1). CAVEAT: the test step is --no-build (skips
+# the dev build-mutex), so two suites share the 8 cores and each runs slower — the step
+# and job timeouts below are raised to absorb that so CPU-shared runs don't blow the
+# clock. Real throughput gain is modest (CPU-bound); the durable lever is more compute
+# (a 3rd runner) or a faster coverage path. Reap coverage orphans + auto-cancel wedged
+# runs out-of-band (dotnet-coverage hard-hangs the testhost when killed under timeout).
 concurrency:
-  group: zero-tolerance-tysonx-dev
+  group: zero-tolerance-tysonx-dev-${{ github.repository }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: false
 
 jobs:
   zero-tolerance:
     if: github.event_name == 'pull_request'
     runs-on: [self-hosted, tysonx-dev]
-    timeout-minutes: 40
+    # 60 (was 40): with per-PR concurrency two suites can share the box; a CPU-shared
+    # instrumented run is slower, so the job cap is raised to keep it off the clock.
+    timeout-minutes: 60
     permissions:
       contents: read
       issues: write
@@ -105,9 +110,10 @@ jobs:
         # The instrumented (dotnet-coverage collect) suite legitimately grew past the
         # old 15-min cap as the test count climbed (lodgers ~449 tests, ~12-15 min
         # under coverage on the arm64 runner), so green PRs were failing on the clock,
-        # not on a defect. 30 leaves headroom under the 40-min job cap; the 8-min
-        # per-test blame-hang timeout below still catches a genuinely wedged test fast.
-        timeout-minutes: 30
+        # not on a defect. 50 (was 30): under per-PR concurrency two suites can share the
+        # box and run slower, so the cap is raised to keep CPU-shared runs green; the
+        # 8-min per-test blame-hang timeout below still catches a genuinely wedged test.
+        timeout-minutes: 50
         run: |
           # Coverage on this linux-arm64 self-hosted runner needs STATIC managed
           # instrumentation. Both profiler-based collectors are broken here:
