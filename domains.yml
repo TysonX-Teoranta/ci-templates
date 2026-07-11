@@ -63,6 +63,18 @@ domains:
     test_project: tests/TysonxSite.Tests/TysonxSite.Tests.csproj
     hygiene: required
     rid: linux-x64
+  majorfeen:
+    # Band website (Major Feen) — native Blazor WASM + EF Core/Postgres. Dev lane active;
+    # RC/hygiene wired later. No test_project yet (add when tests land).
+    repo: TysonX-Teoranta/majorfeen
+    solution: MajorFeen.slnx
+    app_project: src/MajorFeen.Site/MajorFeen.Site/MajorFeen.Site.csproj
+    app_dirs: "src"
+    dev_base: origin/majorfeen-dev
+    status: active
+    rid: linux-x64
+    db_project: src/MajorFeen.Data/MajorFeen.Data.csproj
+    db_context: MajorFeenDbContext
   tysonx-core:
     # pulseai's own repo. No-dotnet domain: app_project stays empty on purpose —
     # the gate skips the build/analyzer pass and hard-gates everything else
