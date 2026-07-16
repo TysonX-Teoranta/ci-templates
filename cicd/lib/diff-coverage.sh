@@ -132,6 +132,7 @@ for cls in tree.getroot().iter("class"):
 _TYPE_DECL = re.compile(r"\b(class|struct|record|enum|interface)\s+\w")
 _LINE_COMMENT = re.compile(r"//[^\n]*")
 _BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
+_CONST_STMT = re.compile(r"(?:^|(?<=\n))\s*(?:(?:public|private|protected|internal|new)\s+)*const\s[^;]*;")
 
 def declaration_only_file(path):
     # Enum- and interface-only files compile to ZERO sequence points — the
@@ -145,6 +146,14 @@ def declaration_only_file(path):
     # statements) stay strict. Known narrow fail-open: an interface file whose
     # default method impls are untested skips too — accepted, StyleCop style here
     # bans default interface members.
+    #
+    # Consts-only class files (constants catalogs like Permissions.cs) are the
+    # same class of file: const fields are inlined at compile time and carry NO
+    # IL, so the file can never appear in a coverage report either (lodgers
+    # #451: two new policy-name consts were the only misses at min=100). Skip
+    # them ONLY when, after removing comments and const declarations, nothing
+    # member-shaped remains — a method, property, or (static) readonly field
+    # (those DO emit IL once loaded) keeps the file strict.
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             src = fh.read()
@@ -152,7 +161,21 @@ def declaration_only_file(path):
         return False
     src = _BLOCK_COMMENT.sub("", _LINE_COMMENT.sub("", src))
     kinds = {m.group(1) for m in _TYPE_DECL.finditer(src)}
-    return bool(kinds) and kinds <= {"enum", "interface"}
+    if not kinds:
+        return False
+    if kinds <= {"enum", "interface"}:
+        return True
+    body = _CONST_STMT.sub("", src)
+    for raw in body.splitlines():
+        s = raw.strip()
+        if not s or s in ("{", "}", "};"):
+            continue                       # blank / structural brace
+        if s.startswith(("using ", "namespace ", "[")):
+            continue                       # import, namespace, attribute
+        if _TYPE_DECL.search(s):
+            continue                       # type declaration header
+        return False                       # anything else is member-shaped
+    return True
 
 def find_hits(path):
     # Suffix matching lines up absolute cobertura filenames with repo-relative
