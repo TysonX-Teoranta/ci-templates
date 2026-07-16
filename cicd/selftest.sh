@@ -226,6 +226,22 @@ XML
   git -C "$R" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm widget
   (cd "$R" && bash "$DC" --cobertura "$WORK/cov-hit.xml" --min 100 --base HEAD~1 >/dev/null 2>&1)
   ok "diffcov/never-loaded-class-still-strict" "$?" "1"
+  # Consts-only class files (constants catalogs like Permissions.cs) also compile
+  # to ZERO sequence points — const fields are inlined and carry no IL, so the
+  # file can never appear in a coverage report (lodgers #451: two new policy-name
+  # consts were the only misses at min=100). Such files must not gate…
+  printf 'namespace App.Security\n{\n    internal static class Names\n    {\n        public const string A = "A";\n\n        public const string B = "B";\n    }\n}\n' > "$R/Names.cs"
+  git -C "$R" add Names.cs
+  git -C "$R" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm constsonly
+  (cd "$R" && bash "$DC" --cobertura "$WORK/cov-hit.xml" --min 100 --base HEAD~1 >/dev/null 2>&1)
+  ok "diffcov/consts-only-class-exempt" "$?" "0"
+  # …while a const alongside ANY executable member keeps the file strict — the
+  # method emits IL, the file is loadable, its absence means genuinely untested.
+  printf 'public class Mixed\n{\n    public const string A = "A";\n\n    public int N() { return 1; }\n}\n' > "$R/Mixed.cs"
+  git -C "$R" add Mixed.cs
+  git -C "$R" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm mixedconst
+  (cd "$R" && bash "$DC" --cobertura "$WORK/cov-hit.xml" --min 100 --base HEAD~1 >/dev/null 2>&1)
+  ok "diffcov/const-plus-method-still-strict" "$?" "1"
 else
   warn "python3/git not present — skipping diff-coverage selftests"
 fi
