@@ -189,8 +189,20 @@ jobs:
             exit 0
           fi
 
+          # Merge under AUTOMERGE_PAT, not github.token. A squash-merge performed by
+          # GITHUB_TOKEN pushes to the dev branch, but by GitHub's recursion rules that
+          # push triggers NO workflows — so the on:push "Deploy dev" lane never fires and
+          # dev silently stops tracking the merged tip (proven live: every Deploy dev run
+          # was a manual workflow_dispatch, never an auto push). A PAT push DOES trigger
+          # Deploy dev, closing the merge->auto-deploy loop. Same rationale as
+          # update_branch above. Fall back to github.token when no PAT is present: the
+          # merge still lands (dev deploy must then be dispatched manually).
+          MERGE_TOKEN="${AUTOMERGE_PAT:-$GH_TOKEN}"
+          if [ -z "${AUTOMERGE_PAT:-}" ]; then
+            echo "WARN: no AUTOMERGE_PAT — merging under github.token; the resulting push will NOT trigger Deploy dev. Dispatch the dev deploy manually."
+          fi
           echo "All conditions met (open, non-draft, non-release/promote, dev-branch base, mergeable, $total_checks/$total_checks checks passing) — merging PR #$PR."
-          if ! gh pr merge "$PR" --repo "$REPO" --squash --delete-branch=false; then
+          if ! GH_TOKEN="$MERGE_TOKEN" gh pr merge "$PR" --repo "$REPO" --squash --delete-branch=false; then
             # Base may have advanced between evaluation and merge (race). Re-read the
             # state: if we merely fell behind, update the branch and let the next
             # cycle merge; anything else is a genuine failure.
