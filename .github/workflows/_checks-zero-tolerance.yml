@@ -66,7 +66,7 @@ jobs:
   zero-tolerance:
     if: github.event_name == 'pull_request'
     runs-on: [self-hosted, tysonx-dev]
-    timeout-minutes: 40
+    timeout-minutes: 75
     permissions:
       contents: read
       issues: write
@@ -102,12 +102,14 @@ jobs:
       - name: Test + coverage
         id: test
         if: inputs.test_project != ''
-        # The instrumented (dotnet-coverage collect) suite legitimately grew past the
-        # old 15-min cap as the test count climbed (lodgers ~449 tests, ~12-15 min
-        # under coverage on the arm64 runner), so green PRs were failing on the clock,
-        # not on a defect. 30 leaves headroom under the 40-min job cap; the 8-min
-        # per-test blame-hang timeout below still catches a genuinely wedged test fast.
-        timeout-minutes: 30
+        # The instrumented (dotnet-coverage collect) suite keeps growing with the test
+        # count: lodgers is now ~1561 tests taking ~26 min of tests alone, ~40-45 min
+        # under coverage on the arm64 runner. The old 30-min step cap (sized for ~449
+        # tests) cancelled every green run at the clock — "operation was canceled" /
+        # runner shutdown after tests had already passed. 60 gives real headroom under
+        # the 75-min job cap; the 8-min per-test blame-hang timeout below still catches
+        # a genuinely wedged test fast.
+        timeout-minutes: 60
         run: |
           # Coverage on this linux-arm64 self-hosted runner needs STATIC managed
           # instrumentation. Both profiler-based collectors are broken here:
