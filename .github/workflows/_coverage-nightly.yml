@@ -46,6 +46,7 @@ jobs:
     timeout-minutes: 75
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - name: Checkout dev HEAD
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -88,17 +89,25 @@ jobs:
           COBERTURA=$(find ./coverage -name "coverage.cobertura.xml" | head -1)
           .ci-templates/cicd/lib/full-coverage.sh --cobertura "$COBERTURA" \
             --baseline "${{ inputs.coverage_baseline }}" --bump-baseline -v
-      - name: Commit the raised baseline (only if it changed)
+      # Dev branches are protected (strict + enforce_admins) — a direct push is
+      # rejected. So the raised baseline lands via an auto-merging PR, not a push.
+      - name: Open PR to raise the baseline (only if it changed)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if ! git diff --quiet -- "${{ inputs.coverage_baseline }}"; then
-            git config user.name  lodgings-ie
-            git config user.email 188377399+lodgings-ie@users.noreply.github.com
-            git add "${{ inputs.coverage_baseline }}"
-            git commit -m "cicd(${{ inputs.domain }}): ratchet coverage baseline upward [skip ci]"
-            git push origin "HEAD:${{ inputs.dev_branch }}"
-          else
-            echo "baseline unchanged — no commit"
+          if git diff --quiet -- "${{ inputs.coverage_baseline }}"; then
+            echo "baseline unchanged — nothing to raise"; exit 0
           fi
+          BR="cicd/coverage-baseline-bump-${{ github.run_id }}"
+          git config user.name  lodgings-ie
+          git config user.email 188377399+lodgings-ie@users.noreply.github.com
+          git checkout -b "$BR"
+          git add "${{ inputs.coverage_baseline }}"
+          git commit -m "cicd(${{ inputs.domain }}): ratchet coverage baseline upward"
+          git push origin "$BR"
+          gh pr create --base "${{ inputs.dev_branch }}" --head "$BR" \
+            --title "cicd(${{ inputs.domain }}): ratchet coverage baseline upward" \
+            --body "Automated high-water bump from the nightly re-measure. Auto-merges on green."
 
   mutation:
     if: inputs.mutation_project != ''
@@ -114,7 +123,13 @@ jobs:
           dotnet tool install --global dotnet-stryker >/dev/null 2>&1 || true
           export PATH="$PATH:$HOME/.dotnet/tools"
           cd "$(dirname "${{ inputs.mutation_project }}")"
-          dotnet stryker --reporter html --reporter markdown --reporter progress || true
+          # Point Stryker at the project to mutate + the suite that kills mutants.
+          # First real run is the acceptance test; if a domain needs a tuned
+          # stryker-config.json it is added then (|| true keeps the nightly green).
+          dotnet stryker \
+            --project "$(basename "${{ inputs.mutation_project }}")" \
+            --test-project "$GITHUB_WORKSPACE/${{ inputs.test_project }}" \
+            --reporter html --reporter markdown --reporter progress || true
       - name: Attach mutation summary
         if: always()
         continue-on-error: true
