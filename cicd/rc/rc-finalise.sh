@@ -101,8 +101,26 @@ VERSION="$BASE-rc.$N"; TAG="v$VERSION"
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && die "tag $TAG already exists" 2
 log "finalising $DOMAIN $TAG from $DEV_BRANCH@$HEAD_SHA (bump=$BUMP)"
 
-# --- Scrub + source hygiene (workspace only — never committed) -----------------
+# --- Snapshot dev-head onto the RC branch; the clean is COMMITTED here ----------
+# Locked model (Crom, 2026-07-26): the RC is a separate, cleaned git version off
+# dev-head — not a bare tag on dev, and not an ephemeral workspace scrub. Create the
+# short-lived rc/<domain> branch at the dev-head SHA, run the deterministic scrub, and
+# commit it as a machine-authored snapshot commit (parent = dev-head). Dev is untouched
+# and keeps moving; the tag + build come off THIS cleaned commit.
+RC_BRANCH="rc/$DOMAIN"
+GIT_ID=(-c user.email="188377399+lodgings-ie@users.noreply.github.com" -c user.name="rc-finalise (spine)")
+git checkout -q -B "$RC_BRANCH" "$HEAD_SHA" || die "cannot create RC branch $RC_BRANCH at $HEAD_SHA" 3
+
 run_hygiene scrub
+if git diff --quiet; then
+  log "scrub: no DEV-ONLY content to strip — snapshot == dev-head"
+  RC_COMMIT_SHA="$HEAD_SHA"
+else
+  git "${GIT_ID[@]}" commit -qam "RC scrub $TAG — strip DEV-ONLY (machine; snapshot of $DEV_BRANCH@$HEAD_SHA)" \
+    || die "scrub commit failed" 1
+  RC_COMMIT_SHA="$(git rev-parse HEAD)"
+  log "scrub committed on $RC_BRANCH: $RC_COMMIT_SHA (parent $HEAD_SHA)"
+fi
 run_hygiene source
 
 # --- Build, test, publish (Release; the RC is what live would get) -------------
@@ -161,14 +179,18 @@ if [ -n "$DB_PROJECT" ]; then
   MIG_SHA="$(sha256sum "$STAGE_DIR/$MIGSCRIPT" | awk '{print $1}')"
 fi
 
+# Provenance records the full lineage: dev-head SHA (the snapshot's parent) + the cleaned
+# RC commit SHA (what actually built + ships) + the RC branch + tag.
 jq -n \
   --arg domain "$DOMAIN" --arg tag "$TAG" --arg version "$VERSION" \
   --arg sha "$HEAD_SHA" --arg branch "$DEV_BRANCH" --arg rid "$RID" \
+  --arg rccommit "$RC_COMMIT_SHA" --arg rcbranch "$RC_BRANCH" \
   --arg built "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sdk "$DOTNET_SDK" \
   --arg artifact "$ARTIFACT" --arg asha "$ART_SHA" \
   --arg mig "$MIGSCRIPT" --arg migsha "$MIG_SHA" \
-  '{schema: 1, domain: $domain, tag: $tag, version: $version, source_sha: $sha,
-    source_branch: $branch, rid: $rid, built_utc: $built, dotnet_sdk: $sdk,
+  '{schema: 2, domain: $domain, tag: $tag, version: $version,
+    dev_head_sha: $sha, rc_commit_sha: $rccommit, rc_branch: $rcbranch,
+    source_sha: $sha, source_branch: $branch, rid: $rid, built_utc: $built, dotnet_sdk: $sdk,
     artifact: $artifact, artifact_sha256: $asha,
     migrations_script: $mig, migrations_sha256: $migsha,
     stubs: "none (zero-stub policy)", hygiene: "passed"}' > "$STAGE_DIR/manifest.json"
@@ -188,9 +210,13 @@ if [ "$DRY_RUN" = "1" ]; then
   exit 0
 fi
 
-# --- Tag + prerelease (provenance record; the release asset IS what ships) ----
-git tag -a "$TAG" -m "RC $TAG — live-ready artifact cut from $DEV_BRANCH@$HEAD_SHA" "$HEAD_SHA" \
+# --- Push the cleaned snapshot branch + tag + prerelease ----------------------
+# The tag points at the CLEANED RC commit (not dev-head). rc/<domain> is the persistent
+# cleaned RC version, decoupled from dev; --force-with-lease tolerates a lingering branch
+# from a prior candidate (drop frees the slot via the prerelease; the branch is reused/reset).
+git tag -a "$TAG" -m "RC $TAG — cleaned snapshot of $DEV_BRANCH@$HEAD_SHA (rc commit $RC_COMMIT_SHA)" "$RC_COMMIT_SHA" \
   || die "tag create failed" 1
+git push origin "refs/heads/$RC_BRANCH" --force-with-lease || die "RC branch push failed" 1
 git push origin "refs/tags/$TAG" || die "tag push failed" 1
 NOTES="$STAGE_DIR/notes.md"
 { echo "RC \`$TAG\` for **$DOMAIN** — live-ready by construction (scrubbed, zero-stub, hygiene-proven)."
