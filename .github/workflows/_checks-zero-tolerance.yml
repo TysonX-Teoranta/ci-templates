@@ -36,11 +36,26 @@ on:
         required: false
         type: number
         default: 80
+      min_diff_branch:
+        description: "floor for BRANCH coverage of changed lines; 0 = report-only (defaults to min_diff_coverage in the script when unset there)"
+        required: false
+        type: number
+        default: 0
       min_total_coverage:
         description: "floor for TOTAL product line coverage (ratchet toward 100); 0 = report-only"
         required: false
         type: number
         default: 0
+      min_total_branch:
+        description: "floor for TOTAL product branch coverage; 0 = report-only"
+        required: false
+        type: number
+        default: 0
+      coverage_baseline:
+        description: "path (repo-relative) to the ratchet high-water file {line,branch}; empty = no ratchet"
+        required: false
+        type: string
+        default: ""
       retry_limit:
         required: false
         type: number
@@ -166,23 +181,62 @@ jobs:
               sys.exit(1)
           PY
 
-      - name: Diff-coverage gate (>= min_diff_coverage% of changed lines)
+      - name: Diff-coverage gate (line + branch of changed lines)
         id: diffcov
         if: inputs.test_project != ''
         run: |
           COBERTURA=$(find ./coverage -name "coverage.cobertura.xml" | head -1)
           .ci-templates/cicd/lib/diff-coverage.sh --cobertura "$COBERTURA" \
-            --min "${{ inputs.min_diff_coverage }}" --base "origin/${{ github.base_ref }}" -v
+            --min "${{ inputs.min_diff_coverage }}" \
+            --min-branch "${{ inputs.min_diff_branch }}" \
+            --base "origin/${{ github.base_ref }}" -v
 
-      # Total-coverage floor. Runs even at min 0 so every PR's log carries the
-      # whole-codebase number + worst-offender list — the ratchet's evidence trail.
-      - name: Full-coverage gate (total line coverage >= min_total_coverage%)
+      # Total-coverage floor + ratchet. Runs even at min 0 so every PR's log carries
+      # the whole-codebase line+branch number + worst-offender list. When a baseline
+      # path is given, measured may never drop below the committed high-water mark;
+      # the upward bump on green merge is done by the post-merge ratchet job, never here.
+      - name: Full-coverage gate (total line + branch, ratchet)
         id: fullcov
         if: inputs.test_project != ''
         run: |
           COBERTURA=$(find ./coverage -name "coverage.cobertura.xml" | head -1)
+          BASELINE_ARG=""
+          if [ -n "${{ inputs.coverage_baseline }}" ] && [ -f "${{ inputs.coverage_baseline }}" ]; then
+            BASELINE_ARG="--baseline ${{ inputs.coverage_baseline }}"
+          fi
+          # shellcheck disable=SC2086
           .ci-templates/cicd/lib/full-coverage.sh --cobertura "$COBERTURA" \
-            --min "${{ inputs.min_total_coverage }}" -v
+            --min "${{ inputs.min_total_coverage }}" \
+            --min-branch "${{ inputs.min_total_branch }}" \
+            $BASELINE_ARG -v
+
+      # Per-namespace/per-class HTML + text report attached to the PR checks, so the
+      # spread is visible — not just one number. Never gates (|| true); pure evidence.
+      - name: Coverage report artifact (ReportGenerator)
+        id: covreport
+        if: inputs.test_project != '' && always()
+        continue-on-error: true
+        run: |
+          COBERTURA=$(find ./coverage -name "coverage.cobertura.xml" | head -1)
+          [ -n "$COBERTURA" ] || exit 0
+          dotnet tool install --global dotnet-reportgenerator-globaltool >/dev/null 2>&1 || true
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          reportgenerator "-reports:$COBERTURA" "-targetdir:./coverage/report" \
+            "-reporttypes:Html;TextSummary" >/dev/null 2>&1 || true
+          if [ -f ./coverage/report/Summary.txt ]; then
+            { echo "## Coverage report (${{ inputs.domain }})"; echo '```'; \
+              cat ./coverage/report/Summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload coverage report
+        if: inputs.test_project != '' && always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-report-${{ inputs.domain }}
+          path: coverage/report
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Attach failure report
         if: failure()

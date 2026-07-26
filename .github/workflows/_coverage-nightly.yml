@@ -1,0 +1,149 @@
+# _coverage-nightly.yml — CICD v2 (C178289477824693)
+# Nightly, OFF the single-lane PR gate. Two jobs, both deterministic:
+#   1. ratchet-bump — re-measure coverage on the domain's dev HEAD and raise the
+#      committed high-water baseline (never lowers it). The PR gate enforces
+#      "never drop below baseline"; this is the only thing that RAISES it.
+#   2. mutation — Stryker.NET mutation testing: proves the coverage is load-bearing
+#      (tests actually catch injected bugs), not just executed. Reports the score;
+#      never gates a PR. Runs here, never per-PR, so it cannot wedge the gate lane.
+#
+# Called by a domain's thin coverage-nightly.yml on a schedule. Runs on the shared
+# self-hosted dev runner; keep the schedules staggered across domains so two heavy
+# mutation runs never overlap on the box.
+
+on:
+  workflow_call:
+    inputs:
+      domain:
+        description: "domains.yml key (e.g. lodgers)"
+        required: true
+        type: string
+      test_project:
+        description: "test project/solution to run for coverage + mutation"
+        required: true
+        type: string
+      dev_branch:
+        description: "the domain's dev branch (e.g. lodgers-dev)"
+        required: true
+        type: string
+      coverage_baseline:
+        description: "repo-relative ratchet file {line,branch} to raise"
+        required: true
+        type: string
+      mutation_project:
+        description: "csproj to mutate (Stryker target); empty = skip mutation"
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: coverage-nightly-tysonx-dev
+  cancel-in-progress: false
+
+jobs:
+  ratchet-bump:
+    runs-on: [self-hosted, tysonx-dev]
+    timeout-minutes: 75
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout dev HEAD
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.dev_branch }}
+          fetch-depth: 0
+      - name: Checkout ci-templates spine
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: TysonX-Teoranta/ci-templates
+          ref: main
+          path: .ci-templates
+      - name: Measure coverage (static instrumentation, same recipe as the gate)
+        run: |
+          dotnet tool install --global dotnet-coverage >/dev/null 2>&1 || true
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          mkdir -p ./coverage
+          dotnet build "${{ inputs.test_project }}" -c Debug
+          SESSION="nightly-${{ github.run_id }}"
+          TEST_BIN="$(dirname "${{ inputs.test_project }}")/bin/Debug"
+          [ -d "$TEST_BIN" ] || TEST_BIN="."
+          PRODUCT_RE="$(find . -name '*.csproj' -not -path '*/bin/*' -not -path '*/obj/*' \
+            | grep -viE '/[^/]*tests?\.csproj$' \
+            | while IFS= read -r proj; do
+                name="$(sed -n 's:.*<AssemblyName>[[:space:]]*\([^<]*[^<[:space:]]\)[[:space:]]*</AssemblyName>.*:\1:p' "$proj" | head -1)"
+                echo "${name:-$(basename "$proj" .csproj)}"
+              done | sed 's|[.[\*^$+?{}()|]|\\&|g' | paste -sd'|')"
+          if [ -n "$PRODUCT_RE" ]; then
+            find "$TEST_BIN" -path "*/bin/Debug/*" -name "*.dll" \
+              | grep -E "/(${PRODUCT_RE})\.dll$" \
+              | while IFS= read -r dll; do
+                  dotnet-coverage instrument --session-id "$SESSION" --output "$dll.inst" "$dll" && mv "$dll.inst" "$dll"
+                done
+          fi
+          dotnet-coverage collect --session-id "$SESSION" \
+            "dotnet test \"${{ inputs.test_project }}\" --no-build" \
+            --output ./coverage/coverage.cobertura.xml --output-format cobertura
+      - name: Ratchet the baseline upward
+        run: |
+          COBERTURA=$(find ./coverage -name "coverage.cobertura.xml" | head -1)
+          .ci-templates/cicd/lib/full-coverage.sh --cobertura "$COBERTURA" \
+            --baseline "${{ inputs.coverage_baseline }}" --bump-baseline -v
+      # Dev branches are protected (strict + enforce_admins) — a direct push is
+      # rejected. So the raised baseline lands via an auto-merging PR, not a push.
+      - name: Open PR to raise the baseline (only if it changed)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- "${{ inputs.coverage_baseline }}"; then
+            echo "baseline unchanged — nothing to raise"; exit 0
+          fi
+          BR="cicd/coverage-baseline-bump-${{ github.run_id }}"
+          git config user.name  lodgings-ie
+          git config user.email 188377399+lodgings-ie@users.noreply.github.com
+          git checkout -b "$BR"
+          git add "${{ inputs.coverage_baseline }}"
+          git commit -m "cicd(${{ inputs.domain }}): ratchet coverage baseline upward"
+          git push origin "$BR"
+          gh pr create --base "${{ inputs.dev_branch }}" --head "$BR" \
+            --title "cicd(${{ inputs.domain }}): ratchet coverage baseline upward" \
+            --body "Automated high-water bump from the nightly re-measure. Auto-merges on green."
+
+  mutation:
+    if: inputs.mutation_project != ''
+    runs-on: [self-hosted, tysonx-dev]
+    timeout-minutes: 240
+    steps:
+      - name: Checkout dev HEAD
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.dev_branch }}
+      - name: Stryker.NET mutation run
+        run: |
+          dotnet tool install --global dotnet-stryker >/dev/null 2>&1 || true
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          cd "$(dirname "${{ inputs.mutation_project }}")"
+          # Point Stryker at the project to mutate + the suite that kills mutants.
+          # First real run is the acceptance test; if a domain needs a tuned
+          # stryker-config.json it is added then (|| true keeps the nightly green).
+          dotnet stryker \
+            --project "$(basename "${{ inputs.mutation_project }}")" \
+            --test-project "$GITHUB_WORKSPACE/${{ inputs.test_project }}" \
+            --reporter html --reporter markdown --reporter progress || true
+      - name: Attach mutation summary
+        if: always()
+        continue-on-error: true
+        run: |
+          REPORT=$(find . -name "mutation-report.md" | head -1)
+          if [ -n "$REPORT" ]; then
+            { echo "## Mutation score (${{ inputs.domain }})"; cat "$REPORT"; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload mutation report
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mutation-report-${{ inputs.domain }}
+          path: '**/mutation-report.html'
+          if-no-files-found: ignore
+          retention-days: 14

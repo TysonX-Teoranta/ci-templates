@@ -1,26 +1,35 @@
 #!/usr/bin/env bash
-# full-coverage.sh — Fleet V3
-# PURPOSE: CICD v2 step 3 (C178289477824693). Fails if the TOTAL line coverage of
-# the product code in a Coverlet/dotnet-coverage Cobertura report is below the
-# domain's floor. Complements diff-coverage.sh (which gates only changed lines):
-# the floor stops whole-codebase coverage from regressing and is ratcheted upward
-# as the test estate grows toward full coverage. Deterministic, no AI.
+# full-coverage.sh — Fleet V3 (coverage-expansion: branch + honest denominator + ratchet)
+# PURPOSE: CICD v2 step 3 (C178289477824693). Fails if the TOTAL line coverage OR
+# branch coverage of the product code in a Cobertura report is below the domain floor
+# and/or below the committed high-water baseline (the ratchet). Complements
+# diff-coverage.sh (which gates changed lines/branches). Deterministic, no AI.
 #
-# Usage: full-coverage.sh --cobertura <path> --min <pct 0-100> [--top <n>] [--dry-run] [-v] [-h]
+# Usage: full-coverage.sh --cobertura <path> --min <linepct 0-100> [--min-branch <pct>]
+#                         [--baseline <json>] [--bump-baseline] [--top <n>] [--dry-run] [-v] [-h]
+#   --min-branch  floor for TOTAL branch coverage (default: 0 = report-only)
+#   --baseline    ratchet file {"line":P,"branch":P}; measured may never drop below it
+#   --bump-baseline  after a PASS, rewrite the baseline upward to the measured values
 set -euo pipefail
 
 MIN=0
+MIN_BRANCH=0
 COBERTURA=""
+BASELINE=""
+BUMP=0
 TOP=20
 DRY_RUN=0
 VERBOSE=0
 
-usage() { grep '^# Usage' "$0" | sed 's/^# //'; }
+usage() { grep '^# Usage\|^#   --' "$0" | sed 's/^# //'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --cobertura) COBERTURA="$2"; shift 2 ;;
     --min) MIN="$2"; shift 2 ;;
+    --min-branch) MIN_BRANCH="$2"; shift 2 ;;
+    --baseline) BASELINE="$2"; shift 2 ;;
+    --bump-baseline) BUMP=1; shift ;;
     --top) TOP="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     -v) VERBOSE=1; shift ;;
@@ -32,28 +41,41 @@ done
 [ -n "$COBERTURA" ] || { echo "--cobertura required" >&2; exit 1; }
 [ -f "$COBERTURA" ] || { echo "cobertura file not found: $COBERTURA" >&2; exit 1; }
 
-python3 - "$COBERTURA" "$MIN" "$TOP" "$VERBOSE" "$DRY_RUN" <<'PY'
-import sys, re
+python3 - "$COBERTURA" "$MIN" "$TOP" "$VERBOSE" "$DRY_RUN" "$MIN_BRANCH" "$BASELINE" "$BUMP" <<'PY'
+import sys, re, json, os
 import xml.etree.ElementTree as ET
 
-cobertura, min_pct, top, verbose, dry_run = (
+cobertura, min_pct, top, verbose, dry_run, min_branch, baseline_path, bump = (
     sys.argv[1], float(sys.argv[2]), int(sys.argv[3]),
-    sys.argv[4] == "1", sys.argv[5] == "1")
+    sys.argv[4] == "1", sys.argv[5] == "1", float(sys.argv[6]),
+    sys.argv[7], sys.argv[8] == "1")
 
 # Files that carry no unit-coverage burden — the SAME exclusion set as
 # diff-coverage.sh, so the two gates agree on what "product code" means:
 #   * test-project files (belt-and-braces; reports normally exclude them already),
 #   * app entry points Program.cs/Startup.cs (composition roots, no unit seam),
-#   * generated EF artifacts (Migrations/, *.Designer.cs, *ModelSnapshot.cs, *.g.cs).
+#   * generated EF artifacts (Migrations/, *.Designer.cs, *ModelSnapshot.cs, *.g.cs),
+#   * CI tooling under .github/ (gate scripts, never loaded by the app test host),
+#   * SeedData/ (hand-written static seed rows — data, not behaviour),
+#   * *.razor / *.cshtml (UI markup; the UI is gated by the Playwright walk suite,
+#     not unit coverage, so markup would sit permanently at 0% and crush the %).
 _TEST_PATH = re.compile(r"(^|/)([^/]*\.(Tests?|IntegrationTests|NUnit\.Tests|Playwright)|Tests?)/")
 _ENTRYPOINT = re.compile(r"(^|/)(Program|Startup)\.cs$")
 _GENERATED = re.compile(r"(^|/)Migrations/|\.Designer\.cs$|ModelSnapshot\.cs$|\.g\.cs$")
+_CI_TOOLING = re.compile(r"^\.github/")
+_SEED = re.compile(r"(^|/)SeedData/")
+_MARKUP = re.compile(r"\.(razor|cshtml)$")
 
 def excluded(path):
-    return bool(_TEST_PATH.search(path) or _ENTRYPOINT.search(path) or _GENERATED.search(path))
+    return bool(_TEST_PATH.search(path) or _ENTRYPOINT.search(path)
+                or _GENERATED.search(path) or _CI_TOOLING.search(path)
+                or _SEED.search(path) or _MARKUP.search(path))
+
+_COND = re.compile(r"\((\d+)/(\d+)\)")  # condition-coverage="50% (1/2)"
 
 tree = ET.parse(cobertura)
-hit_by_file = {}  # filename -> {line: hits}
+hit_by_file = {}   # filename -> {line: hits}
+br_by_file = {}    # filename -> {line: (cov, tot)}  branch conditions per line
 # A single source file can appear as MANY <class> entries (C# partial classes,
 # nested types, async state machines). MERGE their line hits taking the max, or a
 # method covered in an early entry vanishes (lodgers #294: DbSeeder.cs, 43 entries).
@@ -62,12 +84,23 @@ for cls in tree.getroot().iter("class"):
     if excluded(fname):
         continue
     dest = hit_by_file.setdefault(fname, {})
+    bdest = br_by_file.setdefault(fname, {})
     for l in cls.iter("line"):
         n = int(l.get("number"))
         dest[n] = max(dest.get(n, 0), int(l.get("hits", "0")))
+        if l.get("branch", "false") == "true":
+            m = _COND.search(l.get("condition-coverage", ""))
+            if m:
+                cov, tot = int(m.group(1)), int(m.group(2))
+                pc, pt = bdest.get(n, (0, 0))
+                # keep the best-covered observation of this branch line
+                if cov >= pc or pt == 0:
+                    bdest[n] = (cov, tot)
 
 total = sum(len(lines) for lines in hit_by_file.values())
 covered = sum(1 for lines in hit_by_file.values() for h in lines.values() if h > 0)
+br_tot = sum(t for f in br_by_file.values() for (_, t) in f.values())
+br_cov = sum(c for f in br_by_file.values() for (c, _) in f.values())
 
 # Zero coverable lines = the collector instrumented nothing. That is an
 # infrastructure failure, not 100% coverage — fail loudly, never vacuously pass.
@@ -76,7 +109,8 @@ if total == 0:
     sys.exit(0 if dry_run else 1)
 
 pct = covered / total * 100
-print(f"full-coverage: {covered}/{total} lines covered ({pct:.1f}%) across {len(hit_by_file)} files")
+bpct = (br_cov / br_tot * 100) if br_tot else 100.0
+print(f"full-coverage: {covered}/{total} lines ({pct:.1f}%), {br_cov}/{br_tot} branches ({bpct:.1f}%) across {len(hit_by_file)} files")
 
 if verbose:
     # Worst offenders first — the work list for closing the gap to full coverage.
@@ -89,8 +123,42 @@ if verbose:
         for miss, n, f in shown:
             print(f"    {miss:5d}/{n:<5d} uncovered  {(n - miss) / n * 100:5.1f}%  {f}")
 
+fail = False
+
+# Absolute floors (belt).
 if pct < min_pct:
-    print(f"::error::full-coverage {pct:.1f}% below the domain floor {min_pct}%")
+    print(f"::error::full-coverage line {pct:.1f}% below the domain floor {min_pct}%")
+    fail = True
+if bpct < min_branch:
+    print(f"::error::full-coverage branch {bpct:.1f}% below the domain branch floor {min_branch}%")
+    fail = True
+
+# Ratchet: measured may never drop below the committed high-water baseline.
+if baseline_path:
+    base = {"line": 0.0, "branch": 0.0}
+    if os.path.exists(baseline_path):
+        try:
+            with open(baseline_path) as fh:
+                base.update(json.load(fh))
+        except (OSError, ValueError) as e:
+            print(f"::error::full-coverage: baseline {baseline_path} unreadable ({e})")
+            sys.exit(0 if dry_run else 1)
+    tol = 0.05  # float-noise guard
+    if pct + tol < float(base["line"]):
+        print(f"::error::full-coverage line {pct:.1f}% regressed below baseline {base['line']}%")
+        fail = True
+    if bpct + tol < float(base["branch"]):
+        print(f"::error::full-coverage branch {bpct:.1f}% regressed below baseline {base['branch']}%")
+        fail = True
+    if bump and not fail:
+        new = {"line": round(max(pct, float(base["line"])), 2),
+               "branch": round(max(bpct, float(base["branch"])), 2)}
+        with open(baseline_path, "w") as fh:
+            json.dump(new, fh, indent=2)
+            fh.write("\n")
+        print(f"full-coverage: baseline ratcheted to line {new['line']}% branch {new['branch']}%")
+
+if fail:
     sys.exit(0 if dry_run else 1)
-print(f"full-coverage {pct:.1f}% >= {min_pct}% — pass")
+print(f"full-coverage line {pct:.1f}% >= {min_pct}%, branch {bpct:.1f}% >= {min_branch}% — pass")
 PY
