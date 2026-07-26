@@ -1,24 +1,29 @@
 #!/usr/bin/env bash
-# diff-coverage.sh — Fleet V3
+# diff-coverage.sh — Fleet V3 (coverage-expansion: branch on changed lines + exclusions)
 # PURPOSE: CICD v2 step 3 (C178289477824693). Fails if lines touched by this PR's
-# diff have < threshold% Coverlet (Cobertura XML) test coverage. Gates only changed
-# lines — small changes carry a small test burden, never zero. Deterministic, no AI.
+# diff have < threshold% line coverage OR, for changed branch lines, < threshold%
+# branch coverage. Gates only changed lines — small changes carry a small test
+# burden, never zero. Deterministic, no AI.
 #
-# Usage: diff-coverage.sh --cobertura <path> --min <pct 0-100> [--base <ref>] [--dry-run] [-v] [-h]
+# Usage: diff-coverage.sh --cobertura <path> --min <pct 0-100> [--min-branch <pct>]
+#                         [--base <ref>] [--dry-run] [-v] [-h]
+#   --min-branch  floor for branch coverage of CHANGED branch lines (default: same as --min)
 set -euo pipefail
 
 MIN=80
+MIN_BRANCH=""
 BASE="origin/main"
 COBERTURA=""
 DRY_RUN=0
 VERBOSE=0
 
-usage() { grep '^# Usage' "$0" | sed 's/^# //'; }
+usage() { grep '^# Usage\|^#   --' "$0" | sed 's/^# //'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --cobertura) COBERTURA="$2"; shift 2 ;;
     --min) MIN="$2"; shift 2 ;;
+    --min-branch) MIN_BRANCH="$2"; shift 2 ;;
     --base) BASE="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     -v) VERBOSE=1; shift ;;
@@ -29,12 +34,15 @@ done
 
 [ -n "$COBERTURA" ] || { echo "--cobertura required" >&2; exit 1; }
 [ -f "$COBERTURA" ] || { echo "cobertura file not found: $COBERTURA" >&2; exit 1; }
+[ -n "$MIN_BRANCH" ] || MIN_BRANCH="$MIN"
 
-python3 - "$COBERTURA" "$MIN" "$VERBOSE" "$BASE" "$DRY_RUN" <<'PY'
+python3 - "$COBERTURA" "$MIN" "$VERBOSE" "$BASE" "$DRY_RUN" "$MIN_BRANCH" <<'PY'
 import subprocess, sys, re
 import xml.etree.ElementTree as ET
 
-cobertura, min_pct, verbose, base, dry_run = sys.argv[1], float(sys.argv[2]), sys.argv[3] == "1", sys.argv[4], sys.argv[5] == "1"
+cobertura, min_pct, verbose, base, dry_run, min_branch = (
+    sys.argv[1], float(sys.argv[2]), sys.argv[3] == "1", sys.argv[4],
+    sys.argv[5] == "1", float(sys.argv[6]))
 
 # changed line numbers per file, from unified diff hunk headers (@@ -a,b +c,d @@)
 diff = subprocess.run(
@@ -77,14 +85,20 @@ def is_code_line(txt):
 #   * CI tooling under .github/ — gate scripts and file-based tool programs
 #     (e.g. ci/il-type-scan.cs) run by the CICD spine itself, never loaded by
 #     the app's test host; counting them scores 0% and blocks any gate change.
+#   * SeedData/ — hand-written static seed rows (DbSeeder.*), data not behaviour.
+#   * *.razor / *.cshtml — UI markup gated by Playwright walks, not unit coverage.
+#     (Kept in lockstep with full-coverage.sh so both gates agree on product code.)
 _TEST_PATH = re.compile(r"(^|/)([^/]*\.(Tests?|IntegrationTests|NUnit\.Tests|Playwright)|Tests?)/")
 _ENTRYPOINT = re.compile(r"(^|/)(Program|Startup)\.cs$")
 _GENERATED = re.compile(r"(^|/)Migrations/|\.Designer\.cs$|ModelSnapshot\.cs$|\.g\.cs$")
 _CI_TOOLING = re.compile(r"^\.github/")
+_SEED = re.compile(r"(^|/)SeedData/")
+_MARKUP = re.compile(r"\.(razor|cshtml)$")
 
 def excluded(path):
     return bool(_TEST_PATH.search(path) or _ENTRYPOINT.search(path)
-                or _GENERATED.search(path) or _CI_TOOLING.search(path))
+                or _GENERATED.search(path) or _CI_TOOLING.search(path)
+                or _SEED.search(path) or _MARKUP.search(path))
 
 changed = {}                               # file -> set(code line numbers)
 cur_file = None
@@ -115,8 +129,11 @@ if not any(changed.values()):
     print("diff-coverage: no changed executable .cs lines — pass")
     sys.exit(0)
 
+_COND = re.compile(r"\((\d+)/(\d+)\)")  # condition-coverage="50% (1/2)"
+
 tree = ET.parse(cobertura)
-hit_by_file = {}  # path suffix match -> {line: hits}
+hit_by_file = {}   # path suffix match -> {line: hits}
+br_by_file = {}    # path suffix match -> {line: (cov, tot)}
 # A single source file can appear as MANY <class> entries (C# partial classes,
 # nested types, async state machines each get their own <class filename="X.cs">).
 # MERGE their line hits — taking the max — rather than letting the last entry
@@ -125,9 +142,17 @@ hit_by_file = {}  # path suffix match -> {line: hits}
 for cls in tree.getroot().iter("class"):
     fname = cls.get("filename", "")
     dest = hit_by_file.setdefault(fname, {})
+    bdest = br_by_file.setdefault(fname, {})
     for l in cls.iter("line"):
         n = int(l.get("number"))
         dest[n] = max(dest.get(n, 0), int(l.get("hits", "0")))
+        if l.get("branch", "false") == "true":
+            mm = _COND.search(l.get("condition-coverage", ""))
+            if mm:
+                cov, tot = int(mm.group(1)), int(mm.group(2))
+                pc, pt = bdest.get(n, (0, 0))
+                if cov >= pc or pt == 0:
+                    bdest[n] = (cov, tot)
 
 _TYPE_DECL = re.compile(r"\b(class|struct|record|enum|interface)\s+\w")
 _LINE_COMMENT = re.compile(r"//[^\n]*")
@@ -183,15 +208,15 @@ def find_hits(path):
     # bind LodgersSite/Foo.cs to LodgersSite.Client/Foo.cs coverage. Exact match
     # wins outright; otherwise take the LONGEST boundary-aligned suffix match
     # rather than whichever entry the dict yields first.
-    best, best_len = None, -1
+    best, best_len, best_br = None, -1, None
     for fname, lines in hit_by_file.items():
         if fname == path:
-            return lines
+            return lines, br_by_file.get(fname, {})
         if fname.endswith("/" + path) or path.endswith("/" + fname):
             n = min(len(fname), len(path))
             if n > best_len:
-                best, best_len = lines, n
-    return best
+                best, best_len, best_br = lines, n, br_by_file.get(fname, {})
+    return best, (best_br or {})
 
 # Every remaining changed line is executable code. Covered = cobertura reports a
 # hit>0 for it. Two distinct "not covered" cases:
@@ -206,8 +231,9 @@ def find_hits(path):
 #     Untested method BODIES are unaffected: their lines appear as 0-hit entries
 #     and are still demanded.
 total, covered, unmatched = 0, 0, []
+br_total, br_covered, br_gaps = 0, 0, []   # branch coverage over CHANGED branch lines
 for path, lns in changed.items():
-    hits = find_hits(path)
+    hits, branches = find_hits(path)
     if hits is None and declaration_only_file(path):
         continue                           # enum/interface-only file: no sequence points exist
     for ln in lns:
@@ -218,15 +244,34 @@ for path, lns in changed.items():
             covered += 1
         else:
             unmatched.append(f"{path}:{ln}")
+        # branch tally: only lines the instrumenter marked as branch points
+        if ln in branches:
+            c, t = branches[ln]
+            br_total += t
+            br_covered += c
+            if c < t:
+                br_gaps.append(f"{path}:{ln} ({c}/{t})")
 
 pct = (covered / total * 100) if total else 100.0
+bpct = (br_covered / br_total * 100) if br_total else 100.0
 if verbose:
-    print(f"diff-coverage: {covered}/{total} changed lines covered ({pct:.1f}%)")
+    print(f"diff-coverage: {covered}/{total} changed lines covered ({pct:.1f}%); "
+          f"{br_covered}/{br_total} changed branches ({bpct:.1f}%)")
     if unmatched:
         print(f"  {len(unmatched)} changed lines uncovered (0 hits, or file never loaded by any test)")
+    if br_gaps:
+        print(f"  {len(br_gaps)} changed branch lines partially covered: {'; '.join(br_gaps[:20])}")
 
+fail = False
 if pct < min_pct:
-    print(f"::error::diff-coverage {pct:.1f}% below minimum {min_pct}%")
+    print(f"::error::diff-coverage line {pct:.1f}% below minimum {min_pct}%")
+    fail = True
+if bpct < min_branch:
+    print(f"::error::diff-coverage branch {bpct:.1f}% below minimum {min_branch}% "
+          f"(untested branches on changed lines)")
+    fail = True
+
+if fail:
     sys.exit(0 if dry_run else 1)
-print(f"diff-coverage {pct:.1f}% >= {min_pct}% — pass")
+print(f"diff-coverage line {pct:.1f}% >= {min_pct}%, branch {bpct:.1f}% >= {min_branch}% — pass")
 PY
