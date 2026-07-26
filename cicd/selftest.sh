@@ -298,6 +298,30 @@ XML
     --baseline "$WORK/fc-base.json" --bump-baseline >/dev/null 2>&1
   grep -q '"branch": 50' "$WORK/fc-base.json"; ok "fullcov/bump-keeps-branch-when-no-data" "$?" "0"
   grep -q '"line": 75' "$WORK/fc-base.json";   ok "fullcov/bump-raises-line-always"        "$?" "0"
+  # Branch coverage must be read from BOTH cobertura dialects: (a) the
+  # condition-coverage="P% (a/b)" attribute, and (b) coverlet's
+  # <conditions><condition coverage="P%"/></conditions> children. Both encode a
+  # 1/2 = 50% branch line here, so --min-branch 40 passes and 60 fails.
+  cat > "$WORK/fc-br-attr.xml" <<'XML'
+<coverage><packages><package><classes><class filename="App/B.cs"><lines>
+<line number="1" hits="1"/>
+<line number="2" hits="1" branch="true" condition-coverage="50% (1/2)"/>
+</lines></class></classes></package></packages></coverage>
+XML
+  bash "$FC" --cobertura "$WORK/fc-br-attr.xml" --min 100 --min-branch 40 >/dev/null 2>&1
+  ok "fullcov/branch-attr-dialect-passes-40" "$?" "0"
+  bash "$FC" --cobertura "$WORK/fc-br-attr.xml" --min 100 --min-branch 60 >/dev/null 2>&1
+  ok "fullcov/branch-attr-dialect-fails-60" "$?" "1"
+  cat > "$WORK/fc-br-coverlet.xml" <<'XML'
+<coverage><packages><package><classes><class filename="App/B.cs"><lines>
+<line number="1" hits="1"/>
+<line number="2" hits="1" branch="true"><conditions><condition number="0" coverage="100%"/><condition number="1" coverage="0%"/></conditions></line>
+</lines></class></classes></package></packages></coverage>
+XML
+  bash "$FC" --cobertura "$WORK/fc-br-coverlet.xml" --min 100 --min-branch 40 >/dev/null 2>&1
+  ok "fullcov/branch-coverlet-dialect-passes-40" "$?" "0"
+  bash "$FC" --cobertura "$WORK/fc-br-coverlet.xml" --min 100 --min-branch 60 >/dev/null 2>&1
+  ok "fullcov/branch-coverlet-dialect-fails-60" "$?" "1"
 else
   warn "python3 not present — skipping full-coverage selftests"
 fi

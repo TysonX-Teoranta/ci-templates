@@ -72,6 +72,26 @@ def excluded(path):
                 or _SEED.search(path) or _MARKUP.search(path))
 
 _COND = re.compile(r"\((\d+)/(\d+)\)")  # condition-coverage="50% (1/2)"
+_PCT = re.compile(r"([\d.]+)")
+
+def _branch_cov(line_el):
+    # Branch coverage of one <line branch="true">, tolerant of BOTH cobertura
+    # dialects the fleet sees: (a) a condition-coverage="P% (a/b)" attribute
+    # (dotnet-coverage / older coverlet), or (b) coverlet's child elements
+    # <conditions><condition coverage="P%"/></conditions> (one branch per
+    # <condition>; covered = coverage > 0). Returns (covered, total) or None.
+    m = _COND.search(line_el.get("condition-coverage", ""))
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    conds = line_el.findall("./conditions/condition")
+    if conds:
+        cov = 0
+        for c in conds:
+            pm = _PCT.search(c.get("coverage", "0"))
+            if pm and float(pm.group(1)) > 0:
+                cov += 1
+        return cov, len(conds)
+    return None
 
 tree = ET.parse(cobertura)
 hit_by_file = {}   # filename -> {line: hits}
@@ -89,9 +109,9 @@ for cls in tree.getroot().iter("class"):
         n = int(l.get("number"))
         dest[n] = max(dest.get(n, 0), int(l.get("hits", "0")))
         if l.get("branch", "false") == "true":
-            m = _COND.search(l.get("condition-coverage", ""))
-            if m:
-                cov, tot = int(m.group(1)), int(m.group(2))
+            ct = _branch_cov(l)
+            if ct is not None:
+                cov, tot = ct
                 pc, pt = bdest.get(n, (0, 0))
                 # keep the best-covered observation of this branch line
                 if cov >= pc or pt == 0:
