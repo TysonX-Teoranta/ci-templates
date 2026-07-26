@@ -165,7 +165,7 @@ for cls in tree.getroot().iter("class"):
     for l in cls.iter("line"):
         n = int(l.get("number"))
         dest[n] = max(dest.get(n, 0), int(l.get("hits", "0")))
-        if l.get("branch", "false") == "true":
+        if l.get("branch", "false").strip().lower() == "true":  # coverlet emits "True"
             ct = _branch_cov(l)
             if ct is not None:
                 cov, tot = ct

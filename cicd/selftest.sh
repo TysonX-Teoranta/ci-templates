@@ -312,10 +312,13 @@ XML
   ok "fullcov/branch-attr-dialect-passes-40" "$?" "0"
   bash "$FC" --cobertura "$WORK/fc-br-attr.xml" --min 100 --min-branch 60 >/dev/null 2>&1
   ok "fullcov/branch-attr-dialect-fails-60" "$?" "1"
+  # NB coverlet emits branch="True" (Pascal-case .NET bool) + <conditions> children
+  # and NO condition-coverage attribute — the exact shape that made the gate read
+  # 0/0 branches on the real runner. The parser must be case-insensitive here.
   cat > "$WORK/fc-br-coverlet.xml" <<'XML'
 <coverage><packages><package><classes><class filename="App/B.cs"><lines>
 <line number="1" hits="1"/>
-<line number="2" hits="1" branch="true"><conditions><condition number="0" coverage="100%"/><condition number="1" coverage="0%"/></conditions></line>
+<line number="2" hits="1" branch="True"><conditions><condition number="0" coverage="100%"/><condition number="1" coverage="0%"/></conditions></line>
 </lines></class></classes></package></packages></coverage>
 XML
   bash "$FC" --cobertura "$WORK/fc-br-coverlet.xml" --min 100 --min-branch 40 >/dev/null 2>&1
