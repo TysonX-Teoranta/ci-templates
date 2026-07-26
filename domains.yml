@@ -41,6 +41,7 @@ domains:
     rid: linux-x64
     db_project: LodgersSite/LodgersSite.csproj
     db_context: ApplicationDbContext
+    loop_cap: 5   # RC refusal-loop bound before terminal escalation (Crom default 5; per-domain adjustable)
   kukuln:
     # Product launch is on hold; the CICD dev + RC lanes are active (parity with
     # lodgers, Crom order 2026-07-07) so the repo stays gate-proven and cuttable.
@@ -53,6 +54,7 @@ domains:
     test_project: Kukuln.slnx
     hygiene: required
     rid: linux-x64
+    loop_cap: 5
   tysonx:
     repo: TysonX-Teoranta/tysonx
     solution: Tysonx.slnx
@@ -63,6 +65,7 @@ domains:
     test_project: tests/TysonxSite.Tests/TysonxSite.Tests.csproj
     hygiene: required
     rid: linux-x64
+    loop_cap: 5
   majorfeen:
     # Band website (Major Feen) — native Blazor WASM + EF Core/Postgres. Dev lane active;
     # RC/hygiene wired later. No test_project yet (add when tests land).
@@ -75,6 +78,7 @@ domains:
     rid: linux-x64
     db_project: src/MajorFeen.Data/MajorFeen.Data.csproj
     db_context: MajorFeenDbContext
+    loop_cap: 5
   tysonx-core:
     # pulseai's own repo. No-dotnet domain: app_project stays empty on purpose —
     # the gate skips the build/analyzer pass and hard-gates everything else
