@@ -151,8 +151,15 @@ if baseline_path:
         print(f"::error::full-coverage branch {bpct:.1f}% regressed below baseline {base['branch']}%")
         fail = True
     if bump and not fail:
+        # Never ratchet the branch baseline off a report that carried NO branch
+        # data (br_tot == 0). dotnet-coverage's cobertura export emits no
+        # conditions, so bpct is a vacuous 100% — locking it as the high-water
+        # would break the gate the moment real branch data ever lands (real
+        # branch < 100 would read as a regression). Line data is real, so line
+        # always ratchets; branch ratchets only when it was actually measured.
         new = {"line": round(max(pct, float(base["line"])), 2),
-               "branch": round(max(bpct, float(base["branch"])), 2)}
+               "branch": (round(max(bpct, float(base["branch"])), 2)
+                          if br_tot else round(float(base["branch"]), 2))}
         with open(baseline_path, "w") as fh:
             json.dump(new, fh, indent=2)
             fh.write("\n")

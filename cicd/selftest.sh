@@ -285,6 +285,19 @@ XML
 XML
   bash "$FC" --cobertura "$WORK/fc-empty.xml" --min 0 >/dev/null 2>&1
   ok "fullcov/empty-report-fails" "$?" "1"
+  # --bump-baseline must ratchet LINE (real data) but NEVER raise BRANCH off a
+  # report with no branch conditions (br_tot=0 -> vacuous 100%) — locking a fake
+  # 100 would break the gate once real branch data lands. 3/4 lines = 75%.
+  cat > "$WORK/fc-nobranch.xml" <<'XML'
+<coverage><packages><package><classes><class filename="App/File.cs">
+<lines><line number="1" hits="1"/><line number="2" hits="1"/><line number="3" hits="1"/><line number="4" hits="0"/></lines>
+</class></classes></package></packages></coverage>
+XML
+  printf '{"line": 10, "branch": 50}\n' > "$WORK/fc-base.json"
+  bash "$FC" --cobertura "$WORK/fc-nobranch.xml" --min 0 \
+    --baseline "$WORK/fc-base.json" --bump-baseline >/dev/null 2>&1
+  grep -q '"branch": 50' "$WORK/fc-base.json"; ok "fullcov/bump-keeps-branch-when-no-data" "$?" "0"
+  grep -q '"line": 75' "$WORK/fc-base.json";   ok "fullcov/bump-raises-line-always"        "$?" "0"
 else
   warn "python3 not present — skipping full-coverage selftests"
 fi
