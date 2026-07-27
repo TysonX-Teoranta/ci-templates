@@ -212,7 +212,10 @@ CDXTOOL="$WORKROOT/.cdxtool"
 [ -x "$CDXTOOL/dotnet-CycloneDX" ] || dotnet tool install CycloneDX --tool-path "$CDXTOOL" >/dev/null \
   || die "CycloneDX install failed" 1
 log "SBOM (CycloneDX): $SOLUTION"
-"$CDXTOOL/dotnet-CycloneDX" "$SOLUTION" --output "$STAGE_DIR" --filename "$SBOM" --json \
+# SBOM from APP_PROJECT (what SHIPS) — not the solution, which drags in test-only deps
+# (xunit etc.) that never enter the artifact. This is both a truer bill-of-materials and
+# scopes the licence gate to shipped dependencies only.
+"$CDXTOOL/dotnet-CycloneDX" "$APP_PROJECT" --output "$STAGE_DIR" --filename "$SBOM" --json \
   || die "SBOM generation failed — RC refused (staging must know exactly what ships)" 1
 [ -s "$STAGE_DIR/$SBOM" ] || die "SBOM empty — RC refused" 1
 SBOM_SHA="$(sha256sum "$STAGE_DIR/$SBOM" | awk '{print $1}')"
