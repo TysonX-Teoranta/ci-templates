@@ -329,6 +329,21 @@ else
   warn "python3 not present — skipping full-coverage selftests"
 fi
 
+# --- exclude-justify: bare [ExcludeFromCodeCoverage] fails, justified passes ---
+if command -v python3 >/dev/null 2>&1; then
+  EXJ="$CICD_ROOT/lib/exclude-justify-lint.sh"
+  printf '[ExcludeFromCodeCoverage]\nclass A {}\n' > "$WORK/exj-bad.cs"
+  ok "exj/bare-attribute-fails" "$(bash "$EXJ" "$WORK/exj-bad.cs" 2>/dev/null)" "1"
+  printf '[ExcludeFromCodeCoverage()]\nclass A {}\n' > "$WORK/exj-empty.cs"
+  ok "exj/empty-parens-fails" "$(bash "$EXJ" "$WORK/exj-empty.cs" 2>/dev/null)" "1"
+  printf '[ExcludeFromCodeCoverage(Justification = "unreachable defensive")]\nclass B {}\n' > "$WORK/exj-ok.cs"
+  ok "exj/justified-passes" "$(bash "$EXJ" "$WORK/exj-ok.cs" 2>/dev/null)" "0"
+  printf '[ExcludeFromCodeCoverageAttribute(Justification="x")]\nclass C {}\n' > "$WORK/exj-ok2.cs"
+  ok "exj/attribute-suffix-justified-passes" "$(bash "$EXJ" "$WORK/exj-ok2.cs" 2>/dev/null)" "0"
+else
+  warn "python3 not present — skipping exclude-justify selftests"
+fi
+
 # --- Verdict ------------------------------------------------------------------
 log "selftest: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
