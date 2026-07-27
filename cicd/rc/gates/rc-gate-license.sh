@@ -22,7 +22,7 @@ require jq
 
 # SPDX ids permitted by default (permissive/business-safe). Copyleft (GPL/AGPL/LGPL) and
 # unknown/empty licences are refused unless explicitly allowlisted per domain (rc.conf).
-ALLOW="${RC_LICENSE_ALLOW:-MIT Apache-2.0 BSD-2-Clause BSD-3-Clause MS-PL 0BSD ISC Unlicense CC0-1.0 MSFT-EULA MICROSOFT-EULA}"
+ALLOW="${RC_LICENSE_ALLOW:-MIT Apache-2.0 BSD-2-Clause BSD-3-Clause MS-PL 0BSD ISC Unlicense CC0-1.0 PostgreSQL MSFT-EULA MICROSOFT-EULA}"
 log "license: scanning SBOM $SBOM_FILE (allow: $ALLOW)"
 
 # Each CycloneDX component may express its licence as licenses[].license.id (SPDX),
