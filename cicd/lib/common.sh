@@ -35,6 +35,9 @@ _ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 log()  { printf '%s [INFO]  %s\n' "$(_ts)" "$*" >&2; }
 warn() { printf '%s [WARN]  %s\n' "$(_ts)" "$*" >&2; }
 err()  { printf '%s [ERROR] %s\n' "$(_ts)" "$*" >&2; }
+# note <msg> — surface a GitHub-Actions notice annotation (also fine locally). To stderr
+# so stdout stays clean for machine-readable payloads, consistent with the helpers above.
+note() { printf '::notice::%s\n' "$*" >&2; }
 # vlog only emits when -v / CICD_VERBOSE=1 is set.
 vlog() { [ "${CICD_VERBOSE:-0}" = "1" ] && printf '%s [DEBUG] %s\n' "$(_ts)" "$*" >&2; return 0; }
 
