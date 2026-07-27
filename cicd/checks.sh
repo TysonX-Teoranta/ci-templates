@@ -278,6 +278,34 @@ else
     warn "comment-density: $DENSITY_FAILS advisory finding(s) — non-blocking (use --strict-density to enforce)"
 fi
 
+# --- ExcludeFromCodeCoverage justification check -----------------------------
+# Coverage doctrine (Crom 2026-07-26): the 100% target is "100% OR
+# [ExcludeFromCodeCoverage]-with-justification". Every exclusion must carry a
+# non-empty Justification = "..." so the escape-hatch stays auditable and the
+# "tiny unreachable remainder" never becomes a silent hole. GATING (like json).
+# Diff scope on PRs = only changed .cs must justify; whole scope surfaces any
+# pre-existing bare exclusions to be swept.
+EXJ_FAILS=0
+EXJ_TARGETS=()
+if [ "$SCOPE" = "whole" ]; then
+  for d in "${APP_DIRS[@]}"; do
+    [ -d "$DOMAIN_ROOT/$d" ] || continue
+    while IFS= read -r f; do EXJ_TARGETS+=("$f"); done \
+      < <(find "$DOMAIN_ROOT/$d" -name '*.cs' \
+            -not -path '*/obj/*' -not -path '*/bin/*' -not -path '*/Migrations/*' \
+            -not -name '*.g.cs' -not -name '*.Designer.cs' -not -name '*ModelSnapshot.cs' \
+            -not -name '*.AssemblyInfo.cs' -not -name '*.GlobalUsings.g.cs' 2>/dev/null)
+  done
+else
+  for f in "${IN_SCOPE_FILES[@]}"; do
+    case "$f" in *.cs) EXJ_TARGETS+=("$DOMAIN_ROOT/$f") ;; esac
+  done
+fi
+if [ "${#EXJ_TARGETS[@]}" -gt 0 ]; then
+  run_lint exclude-justify "$CICD_ROOT/lib/exclude-justify-lint.sh" --report-append "$FINDINGS_TXT" "${EXJ_TARGETS[@]}"
+  EXJ_FAILS=$LINT_COUNT
+fi
+
 # --- JSON validity + canonical-formatting check ------------------------------
 # Unlike comment-density this is NOT advisory: valid/well-formatted JSON is
 # unambiguous (no proxy-metric judgment call), so it always gates.
@@ -387,8 +415,8 @@ if [ "${#MD_TARGETS[@]}" -gt 0 ]; then
   MD_FAILS=$LINT_COUNT
 fi
 
-GATE_TOTAL=$((ANALYZER_COUNT + DENSITY_GATE + JSON_FAILS + XML_FAILS + YAML_FAILS + EDITORCONFIG_FAILS + SHELL_FAILS + MD_FAILS))
-log "findings: analyzer=$ANALYZER_COUNT comment-density=$DENSITY_FAILS json=$JSON_FAILS xml=$XML_FAILS yaml=$YAML_FAILS editorconfig=$EDITORCONFIG_FAILS shell=$SHELL_FAILS md=$MD_FAILS gate-total=$GATE_TOTAL (build rc=$BUILD_RC)"
+GATE_TOTAL=$((ANALYZER_COUNT + DENSITY_GATE + EXJ_FAILS + JSON_FAILS + XML_FAILS + YAML_FAILS + EDITORCONFIG_FAILS + SHELL_FAILS + MD_FAILS))
+log "findings: analyzer=$ANALYZER_COUNT comment-density=$DENSITY_FAILS exclude-justify=$EXJ_FAILS json=$JSON_FAILS xml=$XML_FAILS yaml=$YAML_FAILS editorconfig=$EDITORCONFIG_FAILS shell=$SHELL_FAILS md=$MD_FAILS gate-total=$GATE_TOTAL (build rc=$BUILD_RC)"
 log "report: $FINDINGS_JSON  |  $FINDINGS_TXT"
 
 # --- Verdict -----------------------------------------------------------------
