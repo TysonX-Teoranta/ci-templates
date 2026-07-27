@@ -125,7 +125,17 @@ jobs:
         # the 75-min job cap; the 8-min per-test blame-hang timeout below still catches
         # a genuinely wedged test fast.
         timeout-minutes: 60
+        env:
+          # Runner OOM fix: .NET Server GC pre-allocates a heap PER CORE — on the
+          # multi-core arm64 runner that blows past ~15 GiB under coverage instrumentation,
+          # killing the runner mid-run ("operation was canceled" + orphaned coverlet after
+          # tests already passed). Workstation GC uses one heap → far lower peak memory.
+          DOTNET_gcServer: '0'
+          DOTNET_GCHeapHardLimitPercent: '70'
         run: |
+          # Free the LibreTranslate sidecar's ~1.5 GiB for the coverage window if this
+          # runner is permitted to (best-effort; a no-op where the service/perm is absent).
+          sudo -n /usr/bin/systemctl stop libretranslate.service 2>/dev/null || true
           # Coverage on this linux-arm64 self-hosted runner uses coverlet OFFLINE
           # instrumentation (IL rewrite of the built product dlls, no profiler).
           # History of what does NOT work here:
@@ -175,6 +185,10 @@ jobs:
               print("::error::coverage report is EMPTY — instrumentation collected nothing")
               sys.exit(1)
           PY
+
+      - name: Restart LibreTranslate sidecar (if we stopped it)
+        if: always()
+        run: sudo -n /usr/bin/systemctl start libretranslate.service 2>/dev/null || true
 
       - name: Diff-coverage gate (line + branch of changed lines)
         id: diffcov
