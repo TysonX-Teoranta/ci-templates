@@ -128,6 +128,17 @@ run_hygiene source
 log "restore + build (Release): $SOLUTION"
 dotnet restore "$SOLUTION" || die "restore failed" 1
 dotnet build "$SOLUTION" --no-restore -c Release || die "build failed (post-scrub source must compile)" 1
+
+# --- Central gate: dependency vulnerabilities (zero-AI SDK advisory lookup) -----
+# Restore graph now exists. Per-domain floor from the repo's rc.conf (RC_VULN_FLOOR,
+# default High), read in a subshell so it does not pollute this script's namespace.
+GATES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gates"
+# shellcheck disable=SC1091
+DEP_FLOOR="$( ( [ -r .github/scripts/ci/rc.conf ] && . .github/scripts/ci/rc.conf; printf '%s' "${RC_VULN_FLOOR:-High}" ) )"
+log "central gate: dependency vulnerabilities (floor $DEP_FLOOR)"
+PROJECT="$SOLUTION" RC_VULN_FLOOR="$DEP_FLOOR" bash "$GATES_DIR/rc-gate-dep-vuln.sh" \
+  || die "dependency-vulnerability gate refused the RC" 1
+
 if [ -n "$TEST_PROJECT" ]; then
   log "tests: $TEST_PROJECT"
   dotnet test "$TEST_PROJECT" -c Release || die "tests failed — RC refused" 1
