@@ -190,6 +190,20 @@ if [ -n "$DB_PROJECT" ]; then
   MIG_SHA="$(sha256sum "$STAGE_DIR/$MIGSCRIPT" | awk '{print $1}')"
 fi
 
+# --- SBOM (CycloneDX): full dependency bill-of-materials ships with the RC ------
+# ZERO AI: CycloneDX walks the restored dependency graph deterministically. Staging
+# (= live) must always know exactly what shipped. Fail-closed: no SBOM, no RC.
+SBOM="$DOMAIN-$TAG-sbom.json"; SBOM_SHA=""
+CDXTOOL="$WORKROOT/.cdxtool"
+[ -x "$CDXTOOL/dotnet-CycloneDX" ] || dotnet tool install CycloneDX --tool-path "$CDXTOOL" >/dev/null \
+  || die "CycloneDX install failed" 1
+log "SBOM (CycloneDX): $SOLUTION"
+"$CDXTOOL/dotnet-CycloneDX" "$SOLUTION" --output "$STAGE_DIR" --filename "$SBOM" --json \
+  || die "SBOM generation failed — RC refused (staging must know exactly what ships)" 1
+[ -s "$STAGE_DIR/$SBOM" ] || die "SBOM empty — RC refused" 1
+SBOM_SHA="$(sha256sum "$STAGE_DIR/$SBOM" | awk '{print $1}')"
+log "SBOM: $SBOM ($SBOM_SHA)"
+
 # Provenance records the full lineage: dev-head SHA (the snapshot's parent) + the cleaned
 # RC commit SHA (what actually built + ships) + the RC branch + tag.
 jq -n \
@@ -199,13 +213,15 @@ jq -n \
   --arg built "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sdk "$DOTNET_SDK" \
   --arg artifact "$ARTIFACT" --arg asha "$ART_SHA" \
   --arg mig "$MIGSCRIPT" --arg migsha "$MIG_SHA" \
+  --arg sbom "$SBOM" --arg sbomsha "$SBOM_SHA" \
   '{schema: 2, domain: $domain, tag: $tag, version: $version,
     dev_head_sha: $sha, rc_commit_sha: $rccommit, rc_branch: $rcbranch,
     source_sha: $sha, source_branch: $branch, rid: $rid, built_utc: $built, dotnet_sdk: $sdk,
     artifact: $artifact, artifact_sha256: $asha,
     migrations_script: $mig, migrations_sha256: $migsha,
+    sbom: $sbom, sbom_sha256: $sbomsha,
     stubs: "none (zero-stub policy)", hygiene: "passed"}' > "$STAGE_DIR/manifest.json"
-( cd "$STAGE_DIR" && sha256sum "$ARTIFACT" manifest.json ${MIGSCRIPT:+"$MIGSCRIPT"} > sha256sums.txt )
+( cd "$STAGE_DIR" && sha256sum "$ARTIFACT" manifest.json ${MIGSCRIPT:+"$MIGSCRIPT"} ${SBOM:+"$SBOM"} > sha256sums.txt )
 log "artifact: $ARTIFACT ($ART_SHA)${MIGSCRIPT:+ + $MIGSCRIPT ($MIG_SHA)}"
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
@@ -237,5 +253,6 @@ gh release create "$TAG" --prerelease \
   --title "$DOMAIN $TAG (RC artifact)" --notes-file "$NOTES" \
   "$STAGE_DIR/$ARTIFACT" "$STAGE_DIR/manifest.json" "$STAGE_DIR/sha256sums.txt" \
   ${MIGSCRIPT:+"$STAGE_DIR/$MIGSCRIPT"} \
+  ${SBOM:+"$STAGE_DIR/$SBOM"} \
   || die "release create failed" 1
 log "RC finalised: $TAG (prerelease + artifact published)"
