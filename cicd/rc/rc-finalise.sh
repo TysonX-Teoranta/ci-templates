@@ -145,12 +145,12 @@ log "central gate: dependency vulnerabilities (floor $DEP_FLOOR)"
 PROJECT="$SOLUTION" RC_VULN_FLOOR="$DEP_FLOOR" bash "$GATES_DIR/rc-gate-dep-vuln.sh" \
   || die "dependency-vulnerability gate refused the RC" 1
 
-# --- Central gate: dependency licence compliance (zero-AI nuget-license) --------
-# shellcheck disable=SC1091
-LIC_ALLOW="$( ( [ -r .github/scripts/ci/rc.conf ] && . .github/scripts/ci/rc.conf; printf '%s' "${RC_LICENSE_ALLOW:-}" ) )"
-log "central gate: licence compliance"
-PROJECT="$APP_PROJECT" RC_LICENSE_ALLOW="$LIC_ALLOW" bash "$GATES_DIR/rc-gate-license.sh" \
-  || die "licence-compliance gate refused the RC" 1
+# --- Central gate: dependency licence compliance — DEFERRED (Crom, 2026-07-27) --
+# The nuget-license tool core-dumps on this runner (arm64 / .NET 10) for both .slnx and
+# .csproj inputs — a tool/runtime incompatibility, not a policy finding. Rather than
+# fail-close every cut on a broken tool, the gate is unwired pending a working licence
+# lister (version pin or alternative tool). The gate script (rc-gate-license.sh) stays
+# in the tree for re-wiring once the tool is proven on the runner.
 
 if [ -n "$TEST_PROJECT" ]; then
   log "tests: $TEST_PROJECT"
