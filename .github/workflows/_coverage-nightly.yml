@@ -59,31 +59,35 @@ jobs:
           repository: TysonX-Teoranta/ci-templates
           ref: main
           path: .ci-templates
-      - name: Measure coverage (static instrumentation, same recipe as the gate)
+      - name: Measure coverage (coverlet offline — line + branch, same recipe as the gate)
         run: |
-          dotnet tool install --global dotnet-coverage >/dev/null 2>&1 || true
+          # Mirror the zero-tolerance gate: coverlet offline (profiler-free, emits
+          # line AND branch on arm64), scoped to product assemblies via --include.
+          # dotnet-coverage's cobertura carries no branch data, so the nightly could
+          # never ratchet the branch baseline off it.
+          dotnet tool install --global coverlet.console >/dev/null 2>&1 || true
           export PATH="$PATH:$HOME/.dotnet/tools"
           mkdir -p ./coverage
           dotnet build "${{ inputs.test_project }}" -c Debug
-          SESSION="nightly-${{ github.run_id }}"
           TEST_BIN="$(dirname "${{ inputs.test_project }}")/bin/Debug"
           [ -d "$TEST_BIN" ] || TEST_BIN="."
-          PRODUCT_RE="$(find . -name '*.csproj' -not -path '*/bin/*' -not -path '*/obj/*' \
+          TDIR="$(find "$TEST_BIN" -maxdepth 1 -type d -name 'net*' | head -1)"
+          [ -n "$TDIR" ] || TDIR="$TEST_BIN"
+          INCLUDES=""
+          while IFS= read -r name; do
+            [ -n "$name" ] && INCLUDES="$INCLUDES --include [$name]*"
+          done < <(find . -name '*.csproj' -not -path '*/bin/*' -not -path '*/obj/*' \
             | grep -viE '/[^/]*tests?\.csproj$' \
             | while IFS= read -r proj; do
                 name="$(sed -n 's:.*<AssemblyName>[[:space:]]*\([^<]*[^<[:space:]]\)[[:space:]]*</AssemblyName>.*:\1:p' "$proj" | head -1)"
                 echo "${name:-$(basename "$proj" .csproj)}"
-              done | sed 's|[.[\*^$+?{}()|]|\\&|g' | paste -sd'|')"
-          if [ -n "$PRODUCT_RE" ]; then
-            find "$TEST_BIN" -path "*/bin/Debug/*" -name "*.dll" \
-              | grep -E "/(${PRODUCT_RE})\.dll$" \
-              | while IFS= read -r dll; do
-                  dotnet-coverage instrument --session-id "$SESSION" --output "$dll.inst" "$dll" && mv "$dll.inst" "$dll"
-                done
-          fi
-          dotnet-coverage collect --session-id "$SESSION" \
-            "dotnet test \"${{ inputs.test_project }}\" --no-build" \
-            --output ./coverage/coverage.cobertura.xml --output-format cobertura
+              done)
+          echo "coverlet product includes:$INCLUDES"
+          # shellcheck disable=SC2086
+          coverlet "$TDIR" --target dotnet \
+            --targetargs "test ${{ inputs.test_project }} --no-build" \
+            --format cobertura --output ./coverage/ \
+            $INCLUDES
       - name: Ratchet the baseline upward
         run: |
           COBERTURA=$(find ./coverage -name "coverage.cobertura.xml" | head -1)
