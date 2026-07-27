@@ -123,6 +123,12 @@ else
 fi
 run_hygiene source
 
+# --- Central gate: secret scan over the source tree (zero-AI gitleaks) ----------
+GATES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gates"
+log "central gate: secret scan (source tree)"
+TARGET="$WORKROOT" bash "$GATES_DIR/rc-gate-secrets.sh" \
+  || die "secret-scan gate refused the RC (source)" 1
+
 # --- Build, test, publish (Release; the RC is what live would get) -------------
 [ -n "$SOLUTION" ] || SOLUTION="$APP_PROJECT"
 log "restore + build (Release): $SOLUTION"
@@ -138,6 +144,13 @@ DEP_FLOOR="$( ( [ -r .github/scripts/ci/rc.conf ] && . .github/scripts/ci/rc.con
 log "central gate: dependency vulnerabilities (floor $DEP_FLOOR)"
 PROJECT="$SOLUTION" RC_VULN_FLOOR="$DEP_FLOOR" bash "$GATES_DIR/rc-gate-dep-vuln.sh" \
   || die "dependency-vulnerability gate refused the RC" 1
+
+# --- Central gate: dependency licence compliance (zero-AI nuget-license) --------
+# shellcheck disable=SC1091
+LIC_ALLOW="$( ( [ -r .github/scripts/ci/rc.conf ] && . .github/scripts/ci/rc.conf; printf '%s' "${RC_LICENSE_ALLOW:-}" ) )"
+log "central gate: licence compliance"
+PROJECT="$SOLUTION" RC_LICENSE_ALLOW="$LIC_ALLOW" bash "$GATES_DIR/rc-gate-license.sh" \
+  || die "licence-compliance gate refused the RC" 1
 
 if [ -n "$TEST_PROJECT" ]; then
   log "tests: $TEST_PROJECT"
@@ -156,6 +169,11 @@ rm -rf "$PUBLISH_DIR/runtimes/win"* "$PUBLISH_DIR/runtimes/osx"* 2>/dev/null || 
 rm -f "$PUBLISH_DIR/appsettings.Development.json"
 export PUBLISH_DIR
 run_hygiene publish
+
+# --- Central gate: secret scan over the built artifact (zero-AI gitleaks) -------
+log "central gate: secret scan (publish artifact)"
+TARGET="$PUBLISH_DIR" bash "$GATES_DIR/rc-gate-secrets.sh" \
+  || die "secret-scan gate refused the RC (publish)" 1
 
 # --- Package: tarball + manifest + checksums -----------------------------------
 STAGE_DIR="$WORKROOT/rc-artifact"
