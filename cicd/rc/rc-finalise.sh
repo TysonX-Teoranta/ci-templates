@@ -145,12 +145,8 @@ log "central gate: dependency vulnerabilities (floor $DEP_FLOOR)"
 PROJECT="$SOLUTION" RC_VULN_FLOOR="$DEP_FLOOR" bash "$GATES_DIR/rc-gate-dep-vuln.sh" \
   || die "dependency-vulnerability gate refused the RC" 1
 
-# --- Central gate: dependency licence compliance — DEFERRED (Crom, 2026-07-27) --
-# The nuget-license tool core-dumps on this runner (arm64 / .NET 10) for both .slnx and
-# .csproj inputs — a tool/runtime incompatibility, not a policy finding. Rather than
-# fail-close every cut on a broken tool, the gate is unwired pending a working licence
-# lister (version pin or alternative tool). The gate script (rc-gate-license.sh) stays
-# in the tree for re-wiring once the tool is proven on the runner.
+# Licence compliance runs LATER (post-SBOM): it reads the CycloneDX SBOM instead of the
+# nuget-license CLI (which core-dumps on this runner). See the licence gate after SBOM-gen.
 
 if [ -n "$TEST_PROJECT" ]; then
   log "tests: $TEST_PROJECT"
@@ -221,6 +217,15 @@ log "SBOM (CycloneDX): $SOLUTION"
 [ -s "$STAGE_DIR/$SBOM" ] || die "SBOM empty — RC refused" 1
 SBOM_SHA="$(sha256sum "$STAGE_DIR/$SBOM" | awk '{print $1}')"
 log "SBOM: $SBOM ($SBOM_SHA)"
+
+# --- Central gate: dependency licence compliance (zero-AI; reads the SBOM) ------
+# Reuses the CycloneDX SBOM just generated (no separate licence tool — nuget-license
+# core-dumps on the runner). Per-domain allowlist via rc.conf RC_LICENSE_ALLOW.
+# shellcheck disable=SC1091
+LIC_ALLOW="$( ( [ -r .github/scripts/ci/rc.conf ] && . .github/scripts/ci/rc.conf; printf '%s' "${RC_LICENSE_ALLOW:-}" ) )"
+log "central gate: licence compliance (from SBOM)"
+SBOM_FILE="$STAGE_DIR/$SBOM" RC_LICENSE_ALLOW="$LIC_ALLOW" bash "$GATES_DIR/rc-gate-license.sh" \
+  || die "licence-compliance gate refused the RC" 1
 
 # Provenance records the full lineage: dev-head SHA (the snapshot's parent) + the cleaned
 # RC commit SHA (what actually built + ships) + the RC branch + tag.
