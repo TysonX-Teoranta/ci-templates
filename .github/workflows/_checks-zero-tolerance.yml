@@ -126,50 +126,45 @@ jobs:
         # a genuinely wedged test fast.
         timeout-minutes: 60
         run: |
-          # Coverage on this linux-arm64 self-hosted runner needs STATIC managed
-          # instrumentation. Both profiler-based collectors are broken here:
-          # coverlet's in-process collector hard-hangs the test host (runs
-          # 28599505994/28600866064), and dotnet-coverage's default DYNAMIC mode
-          # exits 0 but never attaches ("Profiler was not initialized") — it
-          # writes an EMPTY cobertura (<packages/>), silently scoring every code
-          # PR 0% diff-coverage (lodgers #294, runs 28705935323/28708127047).
-          # So: build once, rewrite the repo's product assemblies in the test
-          # output with `dotnet-coverage instrument`, run the tests --no-build
-          # under a collect session with the same session id (no profiler
-          # involved), and fail LOUDLY if the report ever comes back empty.
-          # Proven on this runner: the commit dynamic mode scored 0% scores 90.9%.
-          dotnet tool install --global dotnet-coverage
+          # Coverage on this linux-arm64 self-hosted runner uses coverlet OFFLINE
+          # instrumentation (IL rewrite of the built product dlls, no profiler).
+          # History of what does NOT work here:
+          #   * dotnet-coverage / coverlet PROFILER (dynamic) collectors never
+          #     attach on arm64 — they exit 0 and write an EMPTY cobertura,
+          #     silently scoring every PR 0% (lodgers #294, runs 287059xxxxx).
+          #   * dotnet-coverage STATIC instrument gives real LINE coverage but its
+          #     cobertura carries NO branch data (br=0/0 -> vacuous 100% branch).
+          # coverlet OFFLINE is profiler-free AND emits line AND branch. Proven on
+          # this runner: 64 tests, branches-valid=148, branch-rate=0.61 on tysonx.
+          # MUST scope instrumentation to the product assemblies via --include:
+          # instrumenting the whole output dir rewrites every dependency and times
+          # out (30-min cancel). One --include [<AssemblyName>]* per non-test proj.
+          dotnet tool install --global coverlet.console
           export PATH="$PATH:$HOME/.dotnet/tools"
           mkdir -p ./coverage
           dotnet build "${{ inputs.test_project }}" -c Debug
-          SESSION="zt-${{ github.run_id }}"
           TEST_BIN="$(dirname "${{ inputs.test_project }}")/bin/Debug"
           [ -d "$TEST_BIN" ] || TEST_BIN="."
-          # product assemblies = this repo's non-test projects' OUTPUT names;
-          # instrument their copies in the test output (what the tests load).
-          # The output name is <AssemblyName> when the csproj sets one (tysonx:
-          # TysonxSite.csproj -> tysonx-site.dll; matching on csproj basenames
-          # instrumented NOTHING there and the empty-report guard killed the PR),
-          # falling back to the csproj basename when it doesn't.
-          PRODUCT_RE="$(find . -name '*.csproj' -not -path '*/bin/*' -not -path '*/obj/*' \
+          TDIR="$(find "$TEST_BIN" -maxdepth 1 -type d -name 'net*' | head -1)"
+          [ -n "$TDIR" ] || TDIR="$TEST_BIN"
+          # product assemblies = this repo's non-test projects' OUTPUT names
+          # (<AssemblyName> when set — tysonx: TysonxSite.csproj -> tysonx-site —
+          # else the csproj basename). One coverlet --include filter per assembly.
+          INCLUDES=""
+          while IFS= read -r name; do
+            [ -n "$name" ] && INCLUDES="$INCLUDES --include [$name]*"
+          done < <(find . -name '*.csproj' -not -path '*/bin/*' -not -path '*/obj/*' \
             | grep -viE '/[^/]*tests?\.csproj$' \
             | while IFS= read -r proj; do
                 name="$(sed -n 's:.*<AssemblyName>[[:space:]]*\([^<]*[^<[:space:]]\)[[:space:]]*</AssemblyName>.*:\1:p' "$proj" | head -1)"
                 echo "${name:-$(basename "$proj" .csproj)}"
-              done \
-            | sed 's|[.[\*^$+?{}()|]|\\&|g' | paste -sd'|')"
-          if [ -n "$PRODUCT_RE" ]; then
-            find "$TEST_BIN" -path "*/bin/Debug/*" -name "*.dll" \
-              | grep -E "/(${PRODUCT_RE})\.dll$" \
-              | while IFS= read -r dll; do
-                  dotnet-coverage instrument --session-id "$SESSION" \
-                    --output "$dll.inst" "$dll" && mv "$dll.inst" "$dll"
-                done
-          fi
-          dotnet-coverage collect --session-id "$SESSION" \
-            "dotnet test \"${{ inputs.test_project }}\" --no-build --blame-hang-timeout 8m --blame-hang-dump-type mini --diag ./coverage/diag.log" \
-            --output ./coverage/coverage.cobertura.xml --output-format cobertura \
-            2>&1 | tee test-report.txt
+              done)
+          echo "coverlet product includes:$INCLUDES"
+          # shellcheck disable=SC2086
+          coverlet "$TDIR" --target dotnet \
+            --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 8m --blame-hang-dump-type mini" \
+            --format cobertura --output ./coverage/ \
+            $INCLUDES 2>&1 | tee test-report.txt
           test "${PIPESTATUS[0]}" -eq 0
           # empty-report guard: instrumentation regressions must fail here, not
           # as a misleading 0% in the diff-coverage gate
