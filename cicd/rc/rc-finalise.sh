@@ -149,7 +149,7 @@ PROJECT="$SOLUTION" RC_VULN_FLOOR="$DEP_FLOOR" bash "$GATES_DIR/rc-gate-dep-vuln
 # shellcheck disable=SC1091
 LIC_ALLOW="$( ( [ -r .github/scripts/ci/rc.conf ] && . .github/scripts/ci/rc.conf; printf '%s' "${RC_LICENSE_ALLOW:-}" ) )"
 log "central gate: licence compliance"
-PROJECT="$SOLUTION" RC_LICENSE_ALLOW="$LIC_ALLOW" bash "$GATES_DIR/rc-gate-license.sh" \
+PROJECT="$APP_PROJECT" RC_LICENSE_ALLOW="$LIC_ALLOW" bash "$GATES_DIR/rc-gate-license.sh" \
   || die "licence-compliance gate refused the RC" 1
 
 if [ -n "$TEST_PROJECT" ]; then
