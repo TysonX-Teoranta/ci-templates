@@ -81,7 +81,7 @@ jobs:
   zero-tolerance:
     if: github.event_name == 'pull_request'
     runs-on: [self-hosted, tysonx-dev]
-    timeout-minutes: 75
+    timeout-minutes: 110
     permissions:
       contents: read
       issues: write
@@ -117,14 +117,13 @@ jobs:
       - name: Test + coverage
         id: test
         if: inputs.test_project != ''
-        # The instrumented (dotnet-coverage collect) suite keeps growing with the test
-        # count: lodgers is now ~1561 tests taking ~26 min of tests alone, ~40-45 min
-        # under coverage on the arm64 runner. The old 30-min step cap (sized for ~449
-        # tests) cancelled every green run at the clock — "operation was canceled" /
-        # runner shutdown after tests had already passed. 60 gives real headroom under
-        # the 75-min job cap; the 8-min per-test blame-hang timeout below still catches
-        # a genuinely wedged test fast.
-        timeout-minutes: 60
+        # coverlet OFFLINE instrumentation roughly doubles wall-time vs plain test on
+        # the arm64 runner: lodgers' 2204-test suite runs ~23 min bare but ~55-60+ min
+        # instrumented, so the old 60-min step cap TIMED OUT lodgers' gate outright
+        # (run 30256118640 failed at exactly 60m) — nothing could merge. 90 gives
+        # coverlet real headroom on the largest suite under the 110-min job cap; the
+        # 8-min per-test blame-hang timeout below still catches a genuinely wedged test.
+        timeout-minutes: 90
         env:
           # Runner OOM fix: .NET Server GC pre-allocates a heap PER CORE — on the
           # multi-core arm64 runner that blows past ~15 GiB under coverage instrumentation,
