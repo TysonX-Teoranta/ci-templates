@@ -22,6 +22,11 @@ on:
         required: false
         type: string
         default: ""
+      test_slices:
+        description: "run the suite in N sequential namespace slices (1 = single run). Bounds PEAK memory to the largest slice so big suites fit the smaller self-hosted boxes; coverage is merged back into one whole-suite report."
+        required: false
+        type: number
+        default: 1
       runner_label:
         description: "self-hosted runner label to gate on; heavy suites (lodgers) pin tysonx-dev-heavy so they never land on the weaker pulse lane"
         required: false
@@ -174,12 +179,68 @@ jobs:
                 echo "${name:-$(basename "$proj" .csproj)}"
               done)
           echo "coverlet product includes:$INCLUDES"
-          # shellcheck disable=SC2086
-          coverlet "$TDIR" --target dotnet \
-            --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 8m --blame-hang-dump-type mini" \
-            --format cobertura --output ./coverage/ \
-            $INCLUDES 2>&1 | tee test-report.txt
-          test "${PIPESTATUS[0]}" -eq 0
+          SLICES="${{ inputs.test_slices }}"
+          if [ "${SLICES:-1}" -le 1 ]; then
+            # shellcheck disable=SC2086
+            coverlet "$TDIR" --target dotnet \
+              --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 8m --blame-hang-dump-type mini" \
+              --format cobertura --output ./coverage/ \
+              $INCLUDES 2>&1 | tee test-report.txt
+            test "${PIPESTATUS[0]}" -eq 0
+          else
+            # SLICED RUN: the whole suite in one testhost peaks too high for the
+            # smaller self-hosted boxes (OOM at any cgroup ceiling below ~10G).
+            # Each slice is its own testhost that exits before the next starts, so
+            # PEAK memory is bounded by the largest slice rather than the suite.
+            # Coverage accumulates through coverlet's json merge and only the final
+            # slice emits cobertura, so every downstream gate sees one whole-suite
+            # report exactly as before.
+            dotnet test "${{ inputs.test_project }}" --no-build --list-tests > ./coverage/all-tests.txt 2>&1 || {
+              cat ./coverage/all-tests.txt; exit 1; }
+            python3 - "$SLICES" <<'PY'
+          import re, sys
+          slices = int(sys.argv[1])
+          ns = []
+          for line in open("./coverage/all-tests.txt", errors="ignore"):
+              line = line.strip()
+              if not re.match(r'^[A-Za-z_][\w.]*\.[A-Za-z_]\w*\.[A-Za-z_]\w*', line):
+                  continue
+              fq = line.split('(')[0].strip()
+              parts = fq.split('.')
+              if len(parts) < 3:
+                  continue
+              n = '.'.join(parts[:-2])
+              if n not in ns:
+                  ns.append(n)
+          if not ns:
+              print("::error::slice discovery found no test namespaces"); sys.exit(1)
+          buckets = [[] for _ in range(slices)]
+          for i, n in enumerate(sorted(ns)):
+              buckets[i % slices].append(n)
+          with open("./coverage/slices.txt", "w") as fh:
+              for b in buckets:
+                  if b:
+                      fh.write('|'.join(f"FullyQualifiedName~{x}." for x in b) + "\n")
+          print(f"slice discovery: {len(ns)} namespaces -> {sum(1 for b in buckets if b)} slices")
+          PY
+            SLICE_NO=0
+            TOTAL_SLICES=$(wc -l < ./coverage/slices.txt)
+            : > test-report.txt
+            while IFS= read -r FILTER; do
+              SLICE_NO=$((SLICE_NO + 1))
+              MERGE=""
+              [ "$SLICE_NO" -gt 1 ] && MERGE="--merge-with ./coverage/coverage.json"
+              FORMATS="--format json"
+              [ "$SLICE_NO" -eq "$TOTAL_SLICES" ] && FORMATS="--format json --format cobertura"
+              echo "=== coverage slice $SLICE_NO/$TOTAL_SLICES"
+              # shellcheck disable=SC2086
+              coverlet "$TDIR" --target dotnet \
+                --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 8m --blame-hang-dump-type mini --filter \"$FILTER\"" \
+                $FORMATS --output ./coverage/ \
+                $MERGE $INCLUDES 2>&1 | tee -a test-report.txt
+              test "${PIPESTATUS[0]}" -eq 0
+            done < ./coverage/slices.txt
+          fi
           # empty-report guard: instrumentation regressions must fail here, not
           # as a misleading 0% in the diff-coverage gate
           python3 - <<'PY'
