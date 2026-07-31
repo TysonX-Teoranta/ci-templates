@@ -68,6 +68,7 @@ PID=$!
 
 # The boot runs as its own session/process-group leader (setsid): cleanup kills the
 # WHOLE group so nothing the app spawned survives the gate.
+# shellcheck disable=SC2317  # invoked via the EXIT trap only
 cleanup() {
   kill -- "-$PID" 2>/dev/null || kill "$PID" 2>/dev/null || true
   for _ in 1 2 3 4 5; do kill -0 "$PID" 2>/dev/null || break; sleep 1; done

@@ -175,6 +175,7 @@ TARGET="$PUBLISH_DIR" bash "$GATES_DIR/rc-gate-secrets.sh" \
 # Locked (Crom, 2026-07-28): boot the ACTUAL publish output on loopback with a neutral
 # throwaway environment; an HTTP answer proves the host built (= DI graph resolved).
 # Per-domain knobs (probe path / expected code / timeout) come from the repo rc.conf.
+# shellcheck disable=SC1091  # rc.conf lives in the CALLING repo, resolved at run time
 SMOKE_KNOBS="$( ( [ -r .github/scripts/ci/rc.conf ] && . .github/scripts/ci/rc.conf; \
   printf '%s|%s|%s' "${RC_SMOKE_PATH:-/}" "${RC_SMOKE_EXPECT:-any}" "${RC_SMOKE_TIMEOUT:-90}" ) )"
 IFS='|' read -r SMOKE_PATH SMOKE_EXPECT SMOKE_TIMEOUT <<<"$SMOKE_KNOBS"
