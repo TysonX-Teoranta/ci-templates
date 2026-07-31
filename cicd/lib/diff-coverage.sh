@@ -221,6 +221,19 @@ def declaration_only_file(path):
         return False                       # anything else is member-shaped
     return True
 
+def exclusion_attributed_file(path):
+    # A file whose types carry [ExcludeFromCodeCoverage] is absent from the report
+    # BY SANCTIONED DESIGN (the S4 target is "100% or excluded-with-justification"),
+    # not because it was never loaded — so its changed lines must not count as
+    # uncovered (an exclusion-sweep PR otherwise reads 0% and can never merge).
+    # The exclude-justify lint separately fails any such attribute lacking a
+    # non-empty Justification, so this cannot become an unjustified escape hatch.
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return "ExcludeFromCodeCoverage" in fh.read()
+    except OSError:
+        return False
+
 def find_hits(path):
     # Suffix matching lines up absolute cobertura filenames with repo-relative
     # diff paths, but it must align on a `/` boundary — a bare endswith would
@@ -255,6 +268,8 @@ for path, lns in changed.items():
     hits, branches = find_hits(path)
     if hits is None and declaration_only_file(path):
         continue                           # enum/interface-only file: no sequence points exist
+    if hits is None and exclusion_attributed_file(path):
+        continue                           # justified [ExcludeFromCodeCoverage] file: absent by design
     for ln in lns:
         if hits and ln not in hits:
             continue                       # instrumented file, non-executable line
