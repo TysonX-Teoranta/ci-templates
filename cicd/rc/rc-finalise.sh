@@ -171,6 +171,21 @@ log "central gate: secret scan (publish artifact)"
 TARGET="$PUBLISH_DIR" bash "$GATES_DIR/rc-gate-secrets.sh" \
   || die "secret-scan gate refused the RC (publish)" 1
 
+# --- Central gate: DI-wiring proof — cut-time smoke boot (zero-AI) ---------------
+# Locked (Crom, 2026-07-28): boot the ACTUAL publish output on loopback with a neutral
+# throwaway environment; an HTTP answer proves the host built (= DI graph resolved).
+# Per-domain knobs (probe path / expected code / timeout) come from the repo rc.conf.
+# shellcheck disable=SC1091  # rc.conf lives in the CALLING repo, resolved at run time
+SMOKE_KNOBS="$( ( [ -r .github/scripts/ci/rc.conf ] && . .github/scripts/ci/rc.conf; \
+  printf '%s|%s|%s' "${RC_SMOKE_PATH:-/}" "${RC_SMOKE_EXPECT:-any}" "${RC_SMOKE_TIMEOUT:-90}" ) )"
+IFS='|' read -r SMOKE_PATH SMOKE_EXPECT SMOKE_TIMEOUT <<<"$SMOKE_KNOBS"
+APP_DLL="$(basename "$APP_PROJECT")"; APP_DLL="${APP_DLL%.*}.dll"
+log "central gate: smoke boot (DI wiring proof: $APP_DLL, probe $SMOKE_PATH expect $SMOKE_EXPECT)"
+PUBLISH_DIR="$PUBLISH_DIR" APP_DLL="$APP_DLL" \
+  RC_SMOKE_PATH="$SMOKE_PATH" RC_SMOKE_EXPECT="$SMOKE_EXPECT" RC_SMOKE_TIMEOUT="$SMOKE_TIMEOUT" \
+  bash "$GATES_DIR/rc-gate-smoke.sh" \
+  || die "smoke-boot gate refused the RC (DI wiring failed to prove)" 1
+
 # --- Package: tarball + manifest + checksums -----------------------------------
 STAGE_DIR="$WORKROOT/rc-artifact"
 rm -rf "$STAGE_DIR"; mkdir -p "$STAGE_DIR"
