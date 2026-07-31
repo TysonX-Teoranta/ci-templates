@@ -22,6 +22,11 @@ on:
         required: false
         type: string
         default: ""
+      runner_label:
+        description: "self-hosted runner label to gate on; heavy suites (lodgers) pin tysonx-dev-heavy so they never land on the weaker pulse lane"
+        required: false
+        type: string
+        default: "tysonx-dev"
       scope:
         description: "'diff' (changed .cs vs the domain dev_base) or 'whole' (day-1 cleanup)"
         required: false
@@ -80,7 +85,7 @@ concurrency:
 jobs:
   zero-tolerance:
     if: github.event_name == 'pull_request'
-    runs-on: [self-hosted, tysonx-dev]
+    runs-on: [self-hosted, "${{ inputs.runner_label }}"]
     timeout-minutes: 150
     permissions:
       contents: read
