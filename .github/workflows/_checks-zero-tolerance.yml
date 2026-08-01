@@ -226,6 +226,35 @@ jobs:
               done)
           echo "coverlet product includes:$INCLUDES"
           SLICES="${{ inputs.test_slices }}"
+          case "${{ inputs.test_project }}" in
+            *.sln|*.slnx)
+              # SOLUTION test_project (kukuln): the single-TDIR resolution above lands
+              # on "." (no dlls) and coverlet instruments NOTHING — every kukuln gate
+              # failed "coverage report is EMPTY" from the day this harness landed
+              # (2026-07-26) until this branch. Instrument each test project's own
+              # output dir and accumulate through coverlet's json merge; the final
+              # project also emits cobertura so downstream sees one whole-suite report.
+              : > test-report.txt
+              FIRST=1
+              while IFS= read -r tproj; do
+                TB="$(dirname "$tproj")/bin/Debug"
+                TD="$(find "$TB" -maxdepth 1 -type d -name 'net*' 2>/dev/null | head -1)"
+                [ -n "$TD" ] || { echo "::warning::no build output for $tproj — skipped"; continue; }
+                MERGE=""
+                [ "$FIRST" -eq 0 ] && MERGE="--merge-with ./coverage/coverage.json"
+                echo "=== solution coverage: $tproj"
+                # shellcheck disable=SC2086
+                coverlet "$TD" --target dotnet \
+                  --targetargs "test $tproj --no-build --blame-hang-timeout 8m --blame-hang-dump-type mini" \
+                  --format json --format cobertura --output ./coverage/ \
+                  $MERGE $INCLUDES 2>&1 | tee -a test-report.txt
+                test "${PIPESTATUS[0]}" -eq 0
+                FIRST=0
+              done < <(find . -name '*.csproj' -not -path '*/bin/*' -not -path '*/obj/*' \
+                | grep -iE '/[^/]*tests?\.csproj$' | sort)
+              [ "$FIRST" -eq 0 ] || { echo "::error::no test projects with build output found in solution"; exit 1; }
+              ;;
+            *)
           if [ "${SLICES:-1}" -le 1 ]; then
             # shellcheck disable=SC2086
             coverlet "$TDIR" --target dotnet \
@@ -287,6 +316,8 @@ jobs:
               test "${PIPESTATUS[0]}" -eq 0
             done < ./coverage/slices.txt
           fi
+              ;;
+          esac
           # empty-report guard: instrumentation regressions must fail here, not
           # as a misleading 0% in the diff-coverage gate
           python3 - <<'PY'
