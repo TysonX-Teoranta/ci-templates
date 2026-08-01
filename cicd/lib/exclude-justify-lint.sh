@@ -42,9 +42,13 @@ report = sys.argv[1]
 files = sys.argv[2:]
 
 # Match the attribute head, optional "Attribute" suffix, optional (...) arg list.
-# DOTALL so a rare multi-line arg list is captured. Non-greedy so we stop at the
-# first close paren of THIS attribute.
-_ATTR = re.compile(r"ExcludeFromCodeCoverage(?:Attribute)?\s*(\((.*?)\))?", re.S)
+# The arg body is a sequence of non-paren/non-quote chars or complete string
+# literals (regular, escaped, or @-verbatim), so a ')' INSIDE a quoted
+# Justification no longer truncates the capture (the old non-greedy .*? stopped
+# at the first close paren and mangled any reason text containing brackets).
+_ATTR = re.compile(
+    r'ExcludeFromCodeCoverage(?:Attribute)?\s*'
+    r'(\(((?:[^()"]|"(?:[^"\\]|\\.)*"|@"(?:[^"]|"")*")*)\))?', re.S)
 # A valid justification = Justification = "<non-empty>". Allow @"..." verbatim too.
 _JUST = re.compile(r'Justification\s*=\s*@?"([^"]*)"', re.S)
 

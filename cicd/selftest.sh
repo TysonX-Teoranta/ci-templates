@@ -340,6 +340,10 @@ if command -v python3 >/dev/null 2>&1; then
   ok "exj/justified-passes" "$(bash "$EXJ" "$WORK/exj-ok.cs" 2>/dev/null)" "0"
   printf '[ExcludeFromCodeCoverageAttribute(Justification="x")]\nclass C {}\n' > "$WORK/exj-ok2.cs"
   ok "exj/attribute-suffix-justified-passes" "$(bash "$EXJ" "$WORK/exj-ok2.cs" 2>/dev/null)" "0"
+  printf '[ExcludeFromCodeCoverage(Justification = "external (Azure DI) wrapper")]\nclass D {}\n' > "$WORK/exj-paren.cs"
+  ok "exj/parens-inside-justification-pass" "$(bash "$EXJ" "$WORK/exj-paren.cs" 2>/dev/null)" "0"
+  printf '[ExcludeFromCodeCoverage(Justification = @"verbatim (with) parens")]\nclass E {}\n' > "$WORK/exj-paren2.cs"
+  ok "exj/parens-inside-verbatim-justification-pass" "$(bash "$EXJ" "$WORK/exj-paren2.cs" 2>/dev/null)" "0"
 else
   warn "python3 not present — skipping exclude-justify selftests"
 fi
