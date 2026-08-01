@@ -32,6 +32,11 @@ on:
         required: false
         type: string
         default: "tysonx-dev"
+      max_open_prs:
+        description: "backpressure cap: only the N oldest open PRs to this base are gated; younger ones fast-fail with a consolidate message until the queue drains (0 disables)"
+        required: false
+        type: number
+        default: 6
       scope:
         description: "'diff' (changed .cs vs the domain dev_base) or 'whole' (day-1 cleanup)"
         required: false
@@ -97,6 +102,47 @@ jobs:
       issues: write
       pull-requests: write
     steps:
+      # Backpressure guard — the 2026-07-26..31 incident: a generator opened ~20
+      # PRs/hr into a ~1 gate/hr lane and the queue diverged for 5 days (44 open).
+      # Two deterministic rules, enforced BEFORE any checkout/build so a flooded
+      # queue costs seconds per excess PR, not hour-long gate slots:
+      #   1. CAP: only the max_open_prs OLDEST open PRs to this base get gated;
+      #      younger ones fail fast. Self-draining — as the head merges, the next
+      #      oldest becomes eligible on rerun.
+      #   2. ONE ROLLING CAMPAIGN PR: a head branch ending in a batch counter
+      #      (…batch12, …wave3) fast-fails while an OLDER open PR of the same
+      #      branch family exists — bulk campaigns must consolidate, never fan out.
+      - name: Queue guard (backpressure)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+          CAP: ${{ inputs.max_open_prs }}
+        run: |
+          PAIRS=$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&base=$BASE_REF&per_page=100" \
+            --jq '.[] | "\(.number) \(.head.ref)"' | sort -n)
+          TOTAL=$(printf '%s\n' "$PAIRS" | grep -c . || true)
+          echo "queue guard: $TOTAL open PRs to $BASE_REF (cap $CAP), this=#$PR_NUM"
+          if [ "${CAP:-0}" -gt 0 ] && [ "$TOTAL" -gt "$CAP" ]; then
+            if ! printf '%s\n' "$PAIRS" | head -n "$CAP" | awk '{print $1}' | grep -qx "$PR_NUM"; then
+              echo "::error::queue full — $TOTAL open PRs to $BASE_REF (cap $CAP) and #$PR_NUM is not among the $CAP oldest. Consolidate into an existing PR or wait for the queue head to merge, then re-run."
+              exit 1
+            fi
+          fi
+          FAM=$(printf '%s' "$HEAD_REF" | sed -E 's/[0-9]+[A-Za-z]?$//')
+          if [ "$FAM" != "$HEAD_REF" ] && [ -n "$FAM" ]; then
+            OLDER=$(printf '%s\n' "$PAIRS" | awk -v fam="$FAM" -v me="$PR_NUM" '
+              $1 < me && index($2, fam) == 1 {
+                rest = substr($2, length(fam) + 1)
+                if (rest ~ /^[0-9]+[A-Za-z]?$/) { print $1; exit }
+              }')
+            if [ -n "$OLDER" ]; then
+              echo "::error::bulk-campaign rule — PR #$OLDER (same branch family '${FAM}N') is already open. One rolling PR per campaign: push further batches to that PR's branch instead of opening new PRs."
+              exit 1
+            fi
+          fi
+
       - name: Checkout product repo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
