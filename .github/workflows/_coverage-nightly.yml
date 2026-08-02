@@ -155,8 +155,16 @@ jobs:
             --title "cicd(${{ inputs.domain }}): ratchet coverage baseline upward" \
             --body "Automated high-water bump from the nightly re-measure. Auto-merges on green."
 
+  # Ordered AFTER ratchet-bump, never beside it. Both jobs want the one ARM64 dev
+  # runner, and with no dependency the scheduler is free to hand it to mutation
+  # first — observed on the tysonx nightly run 30761094644, where Stryker took the
+  # runner and ratchet-bump sat queued behind a job that can burn up to 4 hours.
+  # ratchet-bump is the load-bearing half (it is the only thing that raises the
+  # baseline); mutation is advisory and already swallows its own failure, so it
+  # waits. always() lets it still run when the ratchet fails.
   mutation:
-    if: inputs.mutation_project != ''
+    needs: ratchet-bump
+    if: always() && inputs.mutation_project != ''
     runs-on: [self-hosted, tysonx-dev, tysonx-dev-heavy]
     timeout-minutes: 240
     steps:
