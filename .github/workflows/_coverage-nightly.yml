@@ -87,6 +87,14 @@ jobs:
                 echo "${name:-$(basename "$proj" .csproj)}"
               done)
           echo "coverlet product includes:$INCLUDES"
+          # Same instrumentation narrowing the gate applies — the nightly keeps its own
+          # copy of this recipe, so a fix to one never reaches the other (the lesson of
+          # ci-templates#83). Keep these two blocks identical or the nightly will ratchet
+          # a baseline the gate can never reproduce.
+          COVFLAGS="--skipautoprops"
+          for a in Obsolete GeneratedCodeAttribute CompilerGeneratedAttribute; do
+            COVFLAGS="$COVFLAGS --exclude-by-attribute $a"
+          done
           case "${{ inputs.test_project }}" in
             *.sln|*.slnx)
               # SOLUTION test_project (kukuln): the single-TDIR resolution above lands
@@ -108,7 +116,7 @@ jobs:
                 coverlet "$TD" --target dotnet \
                   --targetargs "test $tproj --no-build" \
                   --format json --format cobertura --output ./coverage/ \
-                  $MERGE $INCLUDES
+                  $MERGE $INCLUDES $COVFLAGS
                 FIRST=0
               done < <(find . -name '*.csproj' -not -path '*/bin/*' -not -path '*/obj/*' \
                 | grep -iE '/[^/]*tests?\.csproj$' | sort)
@@ -119,7 +127,7 @@ jobs:
               coverlet "$TDIR" --target dotnet \
                 --targetargs "test ${{ inputs.test_project }} --no-build" \
                 --format cobertura --output ./coverage/ \
-                $INCLUDES
+                $INCLUDES $COVFLAGS
               ;;
           esac
       - name: Ratchet the baseline upward
