@@ -231,21 +231,6 @@ jobs:
                 echo "${name:-$(basename "$proj" .csproj)}"
               done)
           echo "coverlet product includes:$INCLUDES"
-          # Narrow WHAT gets instrumented, not what gets tested. Every product repo
-          # already declares this policy in its own coverage.runsettings (lodgers:
-          # ExcludeByAttribute Obsolete/GeneratedCode/CompilerGenerated + SkipAutoProps),
-          # but that file only applies to the XPlat collector — the offline coverlet
-          # path below never read it, so compiler-generated code (Razor/Blazor page
-          # classes, async state machines, iterators, record boilerplate) and trivial
-          # auto-property accessors were IL-rewritten and then walked again in the
-          # post-test "Calculating coverage result…" pass. That pass alone took 18 min
-          # on lodgers' run 30744096931 with every test already passed. Applying the
-          # repo's own declared exclusions here makes the gate agree with the
-          # runsettings instead of contradicting it.
-          COVFLAGS="--skipautoprops"
-          for a in Obsolete GeneratedCodeAttribute CompilerGeneratedAttribute; do
-            COVFLAGS="$COVFLAGS --exclude-by-attribute $a"
-          done
           SLICES="${{ inputs.test_slices }}"
           case "${{ inputs.test_project }}" in
             *.sln|*.slnx)
@@ -268,7 +253,7 @@ jobs:
                 coverlet "$TD" --target dotnet \
                   --targetargs "test $tproj --no-build --blame-hang-timeout 8m --blame-hang-dump-type mini" \
                   --format json --format cobertura --output ./coverage/ \
-                  $MERGE $INCLUDES $COVFLAGS 2>&1 | tee -a test-report.txt
+                  $MERGE $INCLUDES 2>&1 | tee -a test-report.txt
                 test "${PIPESTATUS[0]}" -eq 0
                 FIRST=0
               done < <(find . -name '*.csproj' -not -path '*/bin/*' -not -path '*/obj/*' \
@@ -281,7 +266,7 @@ jobs:
             coverlet "$TDIR" --target dotnet \
               --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 8m --blame-hang-dump-type mini" \
               --format cobertura --output ./coverage/ \
-              $INCLUDES $COVFLAGS 2>&1 | tee test-report.txt
+              $INCLUDES 2>&1 | tee test-report.txt
             test "${PIPESTATUS[0]}" -eq 0
           else
             # SLICED RUN: the whole suite in one testhost peaks too high for the
@@ -333,7 +318,7 @@ jobs:
               coverlet "$TDIR" --target dotnet \
                 --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 8m --blame-hang-dump-type mini --filter \"$FILTER\"" \
                 $FORMATS --output ./coverage/ \
-                $MERGE $INCLUDES $COVFLAGS 2>&1 | tee -a test-report.txt
+                $MERGE $INCLUDES 2>&1 | tee -a test-report.txt
               test "${PIPESTATUS[0]}" -eq 0
             done < ./coverage/slices.txt
           fi
