@@ -176,10 +176,16 @@ jobs:
         # coverlet OFFLINE instrumentation roughly doubles wall-time vs plain test on
         # the arm64 runner: lodgers' 2204-test suite runs ~23 min bare but ~55-60+ min
         # instrumented, so the old 60-min step cap TIMED OUT lodgers' gate outright
-        # (run 30256118640 failed at exactly 60m) — nothing could merge. 90 gives
-        # coverlet real headroom on the largest suite under the 110-min job cap; the
-        # 8-min per-test blame-hang timeout below still catches a genuinely wedged test.
-        timeout-minutes: 90
+        # (run 30256118640 failed at exactly 60m) — nothing could merge. The same wall
+        # was hit again at 90: the suite is now 3291 tests, run 30725860572 (green,
+        # 2026-08-02) spent 87m18s of the 90 in this step, and run 30744096931 died on
+        # the cap with every test PASSED (Failed: 0, Passed: 3291) — 63 min of tests,
+        # then coverlet sat 18 min in "Calculating coverage result…" and the cap fired.
+        # 135 restores real headroom for suite growth plus that post-test coverlet tail,
+        # and still lands inside the 150-min job cap with ~8 min for the surrounding
+        # steps; the 8-min per-test blame-hang timeout below still catches a genuinely
+        # wedged test, so this raises the ceiling without weakening any gate.
+        timeout-minutes: 135
         env:
           # Runner OOM fix: .NET Server GC pre-allocates a heap PER CORE — on the
           # multi-core arm64 runner that blows past ~15 GiB under coverage instrumentation,
