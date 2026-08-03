@@ -177,13 +177,21 @@ if baseline_path:
         # would break the gate the moment real branch data ever lands (real
         # branch < 100 would read as a regression). Line data is real, so line
         # always ratchets; branch ratchets only when it was actually measured.
-        new = {"line": round(max(pct, float(base["line"])), 2),
-               "branch": (round(max(bpct, float(base["branch"])), 2)
-                          if br_tot else round(float(base["branch"]), 2))}
+        #
+        # MARGIN: the nightly and gate run independent instrumentation passes
+        # that produce slightly different numbers on identical code (~0.5-1%).
+        # Subtract a margin so the baseline the nightly writes is always
+        # reachable by the gate. The 0.05 tol on the read side is just float
+        # noise; this margin absorbs real measurement variance.
+        MARGIN = 1.0
+        new_line = round(max(pct - MARGIN, float(base["line"])), 2)
+        new_branch = (round(max(bpct - MARGIN, float(base["branch"])), 2)
+                      if br_tot else round(float(base["branch"]), 2))
+        new = {"line": new_line, "branch": new_branch}
         with open(baseline_path, "w") as fh:
             json.dump(new, fh, indent=2)
             fh.write("\n")
-        print(f"full-coverage: baseline ratcheted to line {new['line']}% branch {new['branch']}%")
+        print(f"full-coverage: baseline ratcheted to line {new['line']}% branch {new['branch']}% (measured {pct:.2f}/{bpct:.2f}, margin {MARGIN}%)")
 
 if fail:
     sys.exit(0 if dry_run else 1)
