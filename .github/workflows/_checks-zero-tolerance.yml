@@ -377,17 +377,15 @@ jobs:
             CHOSEN=""
             if git show "origin/${{ github.base_ref }}:${{ inputs.coverage_baseline }}" > "$BASE_BASELINE" 2>/dev/null; then
               if [ -f "$PR_BASELINE" ]; then
-                CHOSEN=$(python3 -c "
-import json, sys
-b = json.load(open('$BASE_BASELINE'))
-p = json.load(open('$PR_BASELINE'))
-bl, bb = float(b.get('line',0)), float(b.get('branch',0))
-pl, pb = float(p.get('line',0)), float(p.get('branch',0))
-if pl < bl or pb < bb:
-    print('$PR_BASELINE')
-else:
-    print('$BASE_BASELINE')
-")
+                BL=$(python3 -c "import json; d=json.load(open('$BASE_BASELINE')); print(d.get('line',0))")
+                PL=$(python3 -c "import json; d=json.load(open('$PR_BASELINE')); print(d.get('line',0))")
+                BB=$(python3 -c "import json; d=json.load(open('$BASE_BASELINE')); print(d.get('branch',0))")
+                PB=$(python3 -c "import json; d=json.load(open('$PR_BASELINE')); print(d.get('branch',0))")
+                if python3 -c "exit(0 if $PL < $BL or $PB < $BB else 1)"; then
+                  CHOSEN="$PR_BASELINE"
+                else
+                  CHOSEN="$BASE_BASELINE"
+                fi
               else
                 CHOSEN="$BASE_BASELINE"
               fi
