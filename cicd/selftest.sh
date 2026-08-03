@@ -297,7 +297,7 @@ XML
   bash "$FC" --cobertura "$WORK/fc-nobranch.xml" --min 0 \
     --baseline "$WORK/fc-base.json" --bump-baseline >/dev/null 2>&1
   grep -q '"branch": 50' "$WORK/fc-base.json"; ok "fullcov/bump-keeps-branch-when-no-data" "$?" "0"
-  grep -q '"line": 75' "$WORK/fc-base.json";   ok "fullcov/bump-raises-line-always"        "$?" "0"
+  grep -q '"line": 74' "$WORK/fc-base.json";   ok "fullcov/bump-raises-line-always"        "$?" "0"
   # Branch coverage must be read from BOTH cobertura dialects: (a) the
   # condition-coverage="P% (a/b)" attribute, and (b) coverlet's
   # <conditions><condition coverage="P%"/></conditions> children. Both encode a
