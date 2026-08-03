@@ -367,16 +367,32 @@ jobs:
           COBERTURA=$(find ./coverage -name "coverage.cobertura.xml" | head -1)
           BASELINE_ARG=""
           if [ -n "${{ inputs.coverage_baseline }}" ]; then
-            # Read the baseline from the BASE branch, not the PR merge commit.
-            # A ratchet-bump PR raises the value in its own copy of the file —
-            # reading it from the merge commit compares today's measurement
-            # against the raised floor and always fails (majorfeen #264).
+            # Use the LOWER of base-branch vs PR-branch baselines. Ratchet-bump
+            # PRs carry a RAISED value — the base (lower) wins so the gate passes.
+            # Baseline-lowering PRs carry a REDUCED value — the PR (lower) wins so
+            # the deliberate reduction can land without the gate blocking on the
+            # old (higher) floor.
             BASE_BASELINE="/tmp/base-coverage-baseline.json"
+            PR_BASELINE="${{ inputs.coverage_baseline }}"
+            CHOSEN=""
             if git show "origin/${{ github.base_ref }}:${{ inputs.coverage_baseline }}" > "$BASE_BASELINE" 2>/dev/null; then
-              BASELINE_ARG="--baseline $BASE_BASELINE"
-            elif [ -f "${{ inputs.coverage_baseline }}" ]; then
-              BASELINE_ARG="--baseline ${{ inputs.coverage_baseline }}"
+              if [ -f "$PR_BASELINE" ]; then
+                BL=$(python3 -c "import json; d=json.load(open('$BASE_BASELINE')); print(d.get('line',0))")
+                PL=$(python3 -c "import json; d=json.load(open('$PR_BASELINE')); print(d.get('line',0))")
+                BB=$(python3 -c "import json; d=json.load(open('$BASE_BASELINE')); print(d.get('branch',0))")
+                PB=$(python3 -c "import json; d=json.load(open('$PR_BASELINE')); print(d.get('branch',0))")
+                if python3 -c "exit(0 if $PL < $BL or $PB < $BB else 1)"; then
+                  CHOSEN="$PR_BASELINE"
+                else
+                  CHOSEN="$BASE_BASELINE"
+                fi
+              else
+                CHOSEN="$BASE_BASELINE"
+              fi
+            elif [ -f "$PR_BASELINE" ]; then
+              CHOSEN="$PR_BASELINE"
             fi
+            [ -n "$CHOSEN" ] && BASELINE_ARG="--baseline $CHOSEN"
           fi
           # shellcheck disable=SC2086
           .ci-templates/cicd/lib/full-coverage.sh --cobertura "$COBERTURA" \
