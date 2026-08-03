@@ -197,7 +197,10 @@ jobs:
           # killing the runner mid-run ("operation was canceled" + orphaned coverlet after
           # tests already passed). Workstation GC uses one heap → far lower peak memory.
           DOTNET_gcServer: '0'
-          DOTNET_GCHeapHardLimitPercent: '70'
+          # GC env vars are read as HEX (decimal only in runtimeconfig.json).
+          # '70' was 0x70 = 112% = no cap. 0x2D = 45% ≈ 7 GB on the 15.5 GB box.
+          DOTNET_GCHeapHardLimitPercent: '2D'
+          DOTNET_GCConserveMemory: '5'
         run: |
           # Free the LibreTranslate sidecar's ~1.5 GiB for the coverage window if this
           # runner is permitted to (best-effort; a no-op where the service/perm is absent).

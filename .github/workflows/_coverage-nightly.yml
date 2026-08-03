@@ -64,6 +64,10 @@ jobs:
           ref: main
           path: .ci-templates
       - name: Measure coverage (coverlet offline — line + branch, same recipe as the gate)
+        env:
+          DOTNET_gcServer: '0'
+          DOTNET_GCHeapHardLimitPercent: '2D'
+          DOTNET_GCConserveMemory: '5'
         run: |
           # Mirror the zero-tolerance gate: coverlet offline (profiler-free, emits
           # line AND branch on arm64), scoped to product assemblies via --include.
