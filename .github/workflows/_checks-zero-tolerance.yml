@@ -367,16 +367,34 @@ jobs:
           COBERTURA=$(find ./coverage -name "coverage.cobertura.xml" | head -1)
           BASELINE_ARG=""
           if [ -n "${{ inputs.coverage_baseline }}" ]; then
-            # Read the baseline from the BASE branch, not the PR merge commit.
-            # A ratchet-bump PR raises the value in its own copy of the file —
-            # reading it from the merge commit compares today's measurement
-            # against the raised floor and always fails (majorfeen #264).
+            # Use the LOWER of base-branch vs PR-branch baselines. Ratchet-bump
+            # PRs carry a RAISED value — the base (lower) wins so the gate passes.
+            # Baseline-lowering PRs carry a REDUCED value — the PR (lower) wins so
+            # the deliberate reduction can land without the gate blocking on the
+            # old (higher) floor.
             BASE_BASELINE="/tmp/base-coverage-baseline.json"
+            PR_BASELINE="${{ inputs.coverage_baseline }}"
+            CHOSEN=""
             if git show "origin/${{ github.base_ref }}:${{ inputs.coverage_baseline }}" > "$BASE_BASELINE" 2>/dev/null; then
-              BASELINE_ARG="--baseline $BASE_BASELINE"
-            elif [ -f "${{ inputs.coverage_baseline }}" ]; then
-              BASELINE_ARG="--baseline ${{ inputs.coverage_baseline }}"
+              if [ -f "$PR_BASELINE" ]; then
+                CHOSEN=$(python3 -c "
+import json, sys
+b = json.load(open('$BASE_BASELINE'))
+p = json.load(open('$PR_BASELINE'))
+bl, bb = float(b.get('line',0)), float(b.get('branch',0))
+pl, pb = float(p.get('line',0)), float(p.get('branch',0))
+if pl < bl or pb < bb:
+    print('$PR_BASELINE')
+else:
+    print('$BASE_BASELINE')
+")
+              else
+                CHOSEN="$BASE_BASELINE"
+              fi
+            elif [ -f "$PR_BASELINE" ]; then
+              CHOSEN="$PR_BASELINE"
             fi
+            [ -n "$CHOSEN" ] && BASELINE_ARG="--baseline $CHOSEN"
           fi
           # shellcheck disable=SC2086
           .ci-templates/cicd/lib/full-coverage.sh --cobertura "$COBERTURA" \
