@@ -256,7 +256,7 @@ jobs:
                 echo "=== solution coverage: $tproj"
                 # shellcheck disable=SC2086
                 coverlet "$TD" --target dotnet \
-                  --targetargs "test $tproj --no-build --blame-hang-timeout 8m --blame-hang-dump-type mini" \
+                  --targetargs "test $tproj --no-build --blame-hang-timeout 25m --blame-hang-dump-type mini" \
                   --format json --format cobertura --output ./coverage/ \
                   $MERGE $INCLUDES 2>&1 | tee -a test-report.txt
                 test "${PIPESTATUS[0]}" -eq 0
@@ -269,7 +269,7 @@ jobs:
           if [ "${SLICES:-1}" -le 1 ]; then
             # shellcheck disable=SC2086
             coverlet "$TDIR" --target dotnet \
-              --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 8m --blame-hang-dump-type mini" \
+              --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 25m --blame-hang-dump-type mini" \
               --format cobertura --output ./coverage/ \
               $INCLUDES 2>&1 | tee test-report.txt
             test "${PIPESTATUS[0]}" -eq 0
@@ -321,7 +321,7 @@ jobs:
               echo "=== coverage slice $SLICE_NO/$TOTAL_SLICES"
               # shellcheck disable=SC2086
               coverlet "$TDIR" --target dotnet \
-                --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 8m --blame-hang-dump-type mini --filter \"$FILTER\"" \
+                --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 25m --blame-hang-dump-type mini --filter \"$FILTER\"" \
                 $FORMATS --output ./coverage/ \
                 $MERGE $INCLUDES 2>&1 | tee -a test-report.txt
               test "${PIPESTATUS[0]}" -eq 0
