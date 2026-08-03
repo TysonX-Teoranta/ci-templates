@@ -364,13 +364,53 @@ jobs:
           COBERTURA=$(find ./coverage -name "coverage.cobertura.xml" | head -1)
           BASELINE_ARG=""
           if [ -n "${{ inputs.coverage_baseline }}" ]; then
-            # Read the baseline from the BASE branch, not the PR merge commit.
-            # A ratchet-bump PR raises the value in its own copy of the file —
-            # reading it from the merge commit compares today's measurement
-            # against the raised floor and always fails (majorfeen #264).
+            # Gate against the LOWER of the base branch's baseline and the PR's own.
+            #
+            # Base-only (the previous rule) fixes one direction and deadlocks the other:
+            #   * raise  — a ratchet-bump PR carries a HIGHER value than it can measure;
+            #     reading the PR's copy compares today's measurement against the raised
+            #     floor and always fails (majorfeen #264). Base wins, so it passes.
+            #   * correct — when a committed baseline is unreachable (lodgers-dev holds
+            #     87.47/75.99 from a measurement taken under ci-templates#85, which #87
+            #     reverted; the suite now measures 86.6/75.8), EVERY PR fails the ratchet,
+            #     and so does the PR that would fix the file, because the gate reads the
+            #     base copy and ignores the correction. Nothing can merge, and the nightly
+            #     cannot heal it either — the ratchet only ever raises, so it recomputes
+            #     max(86.6, 87.47) and leaves the bad value in place.
+            #
+            # min(base, PR) satisfies both without weakening the ratchet for ordinary work:
+            #   raise    min(33, 87.47)    = 33     -> passes, as #88 intended
+            #   correct  min(87.47, 86.6)  = 86.6   -> passes, deadlock cleared
+            #   code PR  min(X, X)         = X      -> unchanged, floor fully enforced
+            #
+            # A code PR that does not touch the file has identical values on both sides, so
+            # min() is a no-op for it. Lowering the floor therefore requires an explicit,
+            # reviewable edit to the committed baseline — visible in the diff, not silent.
             BASE_BASELINE="/tmp/base-coverage-baseline.json"
+            EFF_BASELINE="/tmp/effective-coverage-baseline.json"
             if git show "origin/${{ github.base_ref }}:${{ inputs.coverage_baseline }}" > "$BASE_BASELINE" 2>/dev/null; then
-              BASELINE_ARG="--baseline $BASE_BASELINE"
+              if [ -f "${{ inputs.coverage_baseline }}" ]; then
+                python3 - "$BASE_BASELINE" "${{ inputs.coverage_baseline }}" "$EFF_BASELINE" <<'PY'
+          import json, sys
+          base_path, head_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+          def read(p):
+              try:
+                  with open(p) as fh:
+                      d = json.load(fh)
+                  return {"line": float(d.get("line", 0)), "branch": float(d.get("branch", 0))}
+              except (OSError, ValueError):
+                  return None
+          base, head = read(base_path), read(head_path)
+          eff = base if head is None else {k: min(base[k], head[k]) for k in ("line", "branch")}
+          with open(out_path, "w") as fh:
+              json.dump(eff, fh, indent=2)
+              fh.write("\n")
+          print(f"baseline: base={base} pr={head} -> effective={eff}")
+          PY
+                BASELINE_ARG="--baseline $EFF_BASELINE"
+              else
+                BASELINE_ARG="--baseline $BASE_BASELINE"
+              fi
             elif [ -f "${{ inputs.coverage_baseline }}" ]; then
               BASELINE_ARG="--baseline ${{ inputs.coverage_baseline }}"
             fi
