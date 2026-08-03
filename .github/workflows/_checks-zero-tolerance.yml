@@ -187,6 +187,11 @@ jobs:
         # wedged test, so this raises the ceiling without weakening any gate.
         timeout-minutes: 135
         env:
+          # .NET's SkiaSharp/libgdiplus probes fontconfig at test-host exit. On the
+          # arm64 runner fontconfig is installed but the test host can't find the
+          # default config — it crashes with exit code 1 AFTER all tests pass.
+          FONTCONFIG_FILE: /etc/fonts/fonts.conf
+          FONTCONFIG_PATH: /etc/fonts
           # Runner OOM fix: .NET Server GC pre-allocates a heap PER CORE — on the
           # multi-core arm64 runner that blows past ~15 GiB under coverage instrumentation,
           # killing the runner mid-run ("operation was canceled" + orphaned coverlet after
