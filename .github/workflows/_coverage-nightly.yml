@@ -66,8 +66,9 @@ jobs:
       - name: Measure coverage (coverlet offline — line + branch, same recipe as the gate)
         env:
           DOTNET_gcServer: '0'
-          DOTNET_GCHeapHardLimitPercent: '2D'
-          DOTNET_GCConserveMemory: '5'
+          # HEX. 0x2D = 45% ~= 7 GB is BELOW the lodgers testhost peak (7.6 GB) and OOMs
+          # the suite; 0x50 = 80% ~= 12.4 GB clears it and still caps runaway. See #89.
+          DOTNET_GCHeapHardLimitPercent: '50'
         run: |
           # Mirror the zero-tolerance gate: coverlet offline (profiler-free, emits
           # line AND branch on arm64), scoped to product assemblies via --include.
