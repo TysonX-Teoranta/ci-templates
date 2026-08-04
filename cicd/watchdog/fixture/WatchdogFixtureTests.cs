@@ -1,5 +1,7 @@
 namespace Tier0.Watchdog.Fixture;
 
+using System;
+using System.Threading;
 using NUnit.Framework;
 
 public sealed class WatchdogFixtureTests
