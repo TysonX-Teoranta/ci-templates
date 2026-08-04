@@ -4,7 +4,10 @@
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "primary watchdog entrypoint requires sudo" >&2; exit 77; }
 [ "${SUDO_USER:-}" = tysonxdev ] || { echo "refusing unexpected caller" >&2; exit 77; }
-[ "$#" -ge 3 ] && [ "$2" = -- ] || { echo "usage: tier0-test-watchdog EVIDENCE_DIR -- COMMAND..." >&2; exit 2; }
+if [ "$#" -lt 3 ] || [ "$2" != -- ]; then
+  echo "usage: tier0-test-watchdog EVIDENCE_DIR -- COMMAND..." >&2
+  exit 2
+fi
 EVIDENCE_DIR="$1"
 shift 2
 case "$EVIDENCE_DIR" in
