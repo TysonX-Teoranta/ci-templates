@@ -150,7 +150,8 @@ path = sys.argv[1]
 if not os.path.isfile(path) or os.path.getsize(path) == 0:
     raise SystemExit("coverage missing or empty")
 root = ET.parse(path).getroot()
-if root.tag != "coverage" or not any(root.iter("class")) or not any(root.iter("line")):
+if (root.tag != "coverage" or next(root.iter("class"), None) is None
+        or next(root.iter("line"), None) is None):
     raise SystemExit("coverage partial or contains no executable evidence")
 PY
 printf 'PASSED\n' > "$DIAGNOSTICS/classification.txt"
