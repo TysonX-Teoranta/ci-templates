@@ -10,13 +10,15 @@ usage: test-watchdog.sh --heartbeat FILE --phase-file FILE --coverage FILE
        --diagnostics DIR [--test-deadline 8100] [--coverage-deadline 1800]
        [--coverage-processing-deadline 600] [--progress-deadline 1500]
        [--dump-deadline 120] [--dump-command FILE] [--cleanup-hook FILE]
-       [--cpu-quota 400%] [--memory-max 15G] -- COMMAND [ARG...]
+       [--cpu-quota 400%] [--memory-max 15G] [--run-as-user USER]
+       -- COMMAND [ARG...]
 EOF
   exit 2
 }
 
 HEARTBEAT="" PHASE_FILE="" COVERAGE_FILE="" DIAGNOSTICS="" CLEANUP_HOOK="" DUMP_COMMAND=""
 CPU_QUOTA=400% MEMORY_MAX=15G
+RUN_AS_USER=""
 TEST_DEADLINE=8100 COVERAGE_DEADLINE=1800 COVERAGE_PROCESSING_DEADLINE=600
 PROGRESS_DEADLINE=1500 DUMP_DEADLINE=120
 while [ "$#" -gt 0 ]; do
@@ -34,6 +36,7 @@ while [ "$#" -gt 0 ]; do
     --cleanup-hook) CLEANUP_HOOK="${2:-}"; shift 2 ;;
     --cpu-quota) CPU_QUOTA="${2:-}"; shift 2 ;;
     --memory-max) MEMORY_MAX="${2:-}"; shift 2 ;;
+    --run-as-user) RUN_AS_USER="${2:-}"; shift 2 ;;
     --) shift; break ;;
     *) usage ;;
   esac
@@ -51,6 +54,9 @@ command -v systemd-run >/dev/null || exit 77
 command -v systemctl >/dev/null || exit 77
 [[ "$CPU_QUOTA" =~ ^[1-9][0-9]*%$ ]] || usage
 [[ "$MEMORY_MAX" =~ ^[1-9][0-9]*[KMG]$ ]] || usage
+if [ -n "$RUN_AS_USER" ]; then
+  id "$RUN_AS_USER" >/dev/null 2>&1 || usage
+fi
 
 mkdir -p "$DIAGNOSTICS"
 EVENTS="$DIAGNOSTICS/watchdog-events.tsv"
@@ -113,10 +119,17 @@ trap '[ "$TERMINAL" -eq 1 ] || kill_scope || true' EXIT INT TERM
 
 touch "$HEARTBEAT"
 printf 'test\n' > "$PHASE_FILE"
+if [ -n "$RUN_AS_USER" ]; then
+  chown "$RUN_AS_USER:$(id -gn "$RUN_AS_USER")" "$HEARTBEAT" "$PHASE_FILE"
+fi
 event start "service=$SERVICE"
+RUN_PROPERTIES=(--property=KillMode=control-group --property=TimeoutStopSec=15s
+  --property="CPUQuota=$CPU_QUOTA" --property="MemoryMax=$MEMORY_MAX")
+if [ -n "$RUN_AS_USER" ]; then
+  RUN_PROPERTIES+=(--property="User=$RUN_AS_USER" --property="Group=$(id -gn "$RUN_AS_USER")")
+fi
 systemd-run --unit="$UNIT" --collect --wait --service-type=exec --quiet \
-  --property=KillMode=control-group --property=TimeoutStopSec=15s \
-  --property="CPUQuota=$CPU_QUOTA" --property="MemoryMax=$MEMORY_MAX" -- "$@" &
+  "${RUN_PROPERTIES[@]}" -- "$@" &
 LAUNCHER_PID=$!
 
 while kill -0 "$LAUNCHER_PID" 2>/dev/null; do
