@@ -3,9 +3,9 @@
 # `tier0-disposable` label or set the disposable marker on it.
 set -euo pipefail
 
-ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-WATCHDOG="$ROOT/lib/test-watchdog.sh"
-FIXTURE="$ROOT/watchdog/scenario-fixture.sh"
+CICD_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+WATCHDOG="$CICD_ROOT/lib/test-watchdog.sh"
+FIXTURE="$CICD_ROOT/watchdog/scenario-fixture.sh"
 [ "${TIER0_DISPOSABLE_RUNNER:-}" = 1 ] || { echo "refusing: TIER0_DISPOSABLE_RUNNER=1 required" >&2; exit 77; }
 case ",${RUNNER_LABELS:-}," in *,tier0-disposable,*) ;; *) echo "refusing: tier0-disposable label required" >&2; exit 77 ;; esac
 [ "${DEPLOYMENT_CREDENTIALS_PRESENT:-0}" = 0 ] || { echo "refusing: deployment credentials present" >&2; exit 77; }
