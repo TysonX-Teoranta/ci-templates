@@ -11,6 +11,7 @@
     <PackageReference Include="NUnit3TestAdapter" Version="6.2.0" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Remove="FixtureProduct/**/*.cs" />
     <ProjectReference Include="FixtureProduct/FixtureProduct.csproj" />
   </ItemGroup>
 </Project>
