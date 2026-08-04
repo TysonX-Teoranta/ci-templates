@@ -3,11 +3,12 @@ namespace Tier0.Watchdog.Fixture;
 using System;
 using System.Threading;
 using NUnit.Framework;
+using Tier0.Watchdog.FixtureProduct;
 
 public sealed class WatchdogFixtureTests
 {
     [Test]
-    public void CleanFollowupPasses() => Assert.That(2 + 2, Is.EqualTo(4));
+    public void CleanFollowupPasses() => Assert.That(Calculator.Add(2, 2), Is.EqualTo(4));
 
     [Test]
     public void RealTesthostCanBeMadeUnresponsive()
