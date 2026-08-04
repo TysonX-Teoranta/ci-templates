@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-DIR="$1" HB="$1/hb" PHASE="$1/phase" COVERAGE="$1/coverage.xml"
+HB="$1/hb" PHASE="$1/phase" COVERAGE="$1/coverage.xml"
 coverage() { printf '<coverage><packages><package><classes><class name="Fixture"><lines><line number="1" hits="1"/></lines></class></classes></package></packages></coverage>\n' > "$COVERAGE"; }
 beat_for() { local seconds="$1"; for _ in $(seq 1 "$seconds"); do touch "$HB"; sleep 1; done; }
 case "${SCENARIO:-success}" in

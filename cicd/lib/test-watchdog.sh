@@ -33,8 +33,10 @@ while [ "$#" -gt 0 ]; do
     *) usage ;;
   esac
 done
-[ "$#" -gt 0 ] && [ -n "$HEARTBEAT" ] && [ -n "$PHASE_FILE" ] \
-  && [ -n "$COVERAGE_FILE" ] && [ -n "$DIAGNOSTICS" ] || usage
+if [ "$#" -eq 0 ] || [ -z "$HEARTBEAT" ] || [ -z "$PHASE_FILE" ] \
+  || [ -z "$COVERAGE_FILE" ] || [ -z "$DIAGNOSTICS" ]; then
+  usage
+fi
 for number in "$TEST_DEADLINE" "$COVERAGE_DEADLINE" "$COVERAGE_PROCESSING_DEADLINE" \
   "$PROGRESS_DEADLINE" "$DUMP_DEADLINE"; do
   [[ "$number" =~ ^[1-9][0-9]*$ ]] || usage
@@ -51,7 +53,7 @@ START=$(date +%s)
 PHASE_START=$START
 LAST_HEARTBEAT_MTIME=0
 LAST_PROGRESS=$START
-CURRENT_PHASE=test
+CURRENT_PHASE="test"
 TERMINAL=0
 
 event() { printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "${2:-}" >> "$EVENTS"; }
@@ -111,7 +113,8 @@ while kill -0 "$LAUNCHER_PID" 2>/dev/null; do
   NOW=$(date +%s)
   NEW_PHASE=$(read_phase)
   if [ "$NEW_PHASE" != "$CURRENT_PHASE" ]; then
-    CURRENT_PHASE=$NEW_PHASE PHASE_START=$NOW
+    CURRENT_PHASE="$NEW_PHASE"
+    PHASE_START="$NOW"
     event phase "$CURRENT_PHASE"
   fi
   MTIME=$(stat -c %Y "$HEARTBEAT" 2>/dev/null || echo 0)

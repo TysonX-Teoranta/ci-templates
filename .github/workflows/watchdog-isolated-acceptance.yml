@@ -45,7 +45,8 @@ jobs:
           test "$(dotnet --version)" = 10.0.110
           test "$(nproc)" -eq 4
           test "$(awk '/MemTotal/ {print int($2 / 1024 / 1024)}' /proc/meminfo)" -ge 14
-          systemctl is-system-running | grep -Eq 'running|degraded'
+          SYSTEM_STATE=$(systemctl is-system-running 2>/dev/null || true)
+          grep -Eq 'running|degraded' <<< "$SYSTEM_STATE"
           test -z "${SSH_AUTH_SOCK:-}"
           test ! -d "$HOME/.ssh" || test -z "$(find "$HOME/.ssh" -type f -print -quit)"
 
