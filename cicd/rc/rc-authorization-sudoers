@@ -1,0 +1,1 @@
+tysonxpulse ALL=(root) NOPASSWD: /usr/local/sbin/tier0-rc-authorization

@@ -14,6 +14,10 @@ on:
         description: "domains.yml key (must be status: active)"
         required: true
         type: string
+      authorization_id:
+        description: "Opaque, short-lived authorization ID issued by the trusted TOTP gateway"
+        required: true
+        type: string
       bump:
         description: "rc | patch | minor | major"
         required: false
@@ -36,8 +40,29 @@ on:
         default: tysonx-pulse
 
 jobs:
+  authorize:
+    name: Claim TOTP authorization and singleton lifecycle
+    runs-on: [self-hosted, "${{ inputs.pulse_runner_label }}"]
+    timeout-minutes: 2
+    outputs:
+      lifecycle_id: ${{ steps.claim.outputs.lifecycle_id }}
+    steps:
+      # This installed, root-owned boundary runs before either product or spine
+      # checkout. A direct workflow dispatch therefore fails without touching source.
+      - name: Atomically claim authorization and Lodgers lifecycle
+        id: claim
+        env:
+          AUTHORIZATION_ID: ${{ inputs.authorization_id }}
+          DOMAIN: ${{ inputs.domain }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          lifecycle_id=$(sudo -n /usr/local/sbin/tier0-rc-authorization claim \
+            --authorization-id "$AUTHORIZATION_ID" --domain "$DOMAIN" --actor "$ACTOR")
+          printf 'lifecycle_id=%s\n' "$lifecycle_id" >> "$GITHUB_OUTPUT"
+
   finalise:
     name: Finalise RC (scrub + hygiene + build-once artifact)
+    needs: authorize
     runs-on: [self-hosted, "${{ inputs.runner_label }}"]
     timeout-minutes: 60
     permissions:
@@ -75,6 +100,29 @@ jobs:
         run: |
           chmod +x .ci-templates/cicd/rc/rc-finalise.sh .ci-templates/cicd/lib/*.sh
           CICD_REGISTRY=.ci-templates/domains.yml .ci-templates/cicd/rc/rc-finalise.sh
+
+  lifecycle:
+    name: Record terminal singleton lifecycle state
+    needs: [authorize, finalise]
+    if: ${{ always() && needs.authorize.result == 'success' }}
+    runs-on: [self-hosted, "${{ inputs.pulse_runner_label }}"]
+    timeout-minutes: 2
+    steps:
+      - name: Persist terminal state without deleting history
+        env:
+          LIFECYCLE_ID: ${{ needs.authorize.outputs.lifecycle_id }}
+          ACTOR: ${{ github.actor }}
+          FINALISE_RESULT: ${{ needs.finalise.result }}
+        run: |
+          if [ "$FINALISE_RESULT" = success ]; then
+            sudo -n /usr/local/sbin/tier0-rc-authorization lifecycle activate \
+              --lifecycle-id "$LIFECYCLE_ID" --actor "$ACTOR"
+            sudo -n /usr/local/sbin/tier0-rc-authorization lifecycle complete \
+              --lifecycle-id "$LIFECYCLE_ID" --actor "$ACTOR"
+          else
+            sudo -n /usr/local/sbin/tier0-rc-authorization lifecycle fail \
+              --lifecycle-id "$LIFECYCLE_ID" --actor "$ACTOR"
+          fi
 
   notify:
     name: RC finalised notice (essential mail + close the refusal loop)
