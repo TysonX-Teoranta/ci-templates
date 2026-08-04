@@ -63,6 +63,17 @@ jobs:
             \( -name 'id_*' -o -name '*.pem' -o -name '*.key' -o -name '*.p12' -o -name '*.pfx' \) \
             -print -quit)"
 
+      - name: Restore and build matching testhost and Coverlet fixture
+        working-directory: cicd/watchdog
+        run: |
+          dotnet restore fixture/Tier0.Watchdog.Fixture.csproj --locked-mode=false
+          dotnet build fixture/Tier0.Watchdog.Fixture.csproj -c Release --no-restore
+          dotnet list fixture/Tier0.Watchdog.Fixture.csproj package > "$RUNNER_TEMP/watchdog-preflight/packages.txt"
+          grep -Eq 'coverlet.collector +10\.0\.1 +10\.0\.1' "$RUNNER_TEMP/watchdog-preflight/packages.txt"
+          grep -Eq 'Microsoft.NET.Test.Sdk +18\.6\.0 +18\.6\.0' "$RUNNER_TEMP/watchdog-preflight/packages.txt"
+          grep -Eq 'NUnit +4\.6\.1 +4\.6\.1' "$RUNNER_TEMP/watchdog-preflight/packages.txt"
+          grep -Eq 'NUnit3TestAdapter +6\.2\.0 +6\.2\.0' "$RUNNER_TEMP/watchdog-preflight/packages.txt"
+
       - name: Run destructive battery three times
         shell: bash
         run: |

@@ -9,6 +9,7 @@ case "$SCENARIO" in
   coverlet_wedge) printf 'coverage\n' > "$PHASE"; touch "$HB"; sleep 30 ;;
   orphan_child) sleep 30 & coverage ;;
   hard_deadline) while :; do touch "$HB"; sleep 1; done ;;
+  missing_cancel) while :; do touch "$HB"; sleep 1; done ;;
   partial_coverage) printf '<coverage><packages>' > "$COVERAGE" ;;
   long_valid_test) beat_for 6; coverage ;;
   long_valid_coverage) printf 'coverage\n' > "$PHASE"; beat_for 6; coverage ;;

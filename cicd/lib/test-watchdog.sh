@@ -9,12 +9,14 @@ usage() {
 usage: test-watchdog.sh --heartbeat FILE --phase-file FILE --coverage FILE
        --diagnostics DIR [--test-deadline 8100] [--coverage-deadline 1800]
        [--coverage-processing-deadline 600] [--progress-deadline 1500]
-       [--dump-deadline 120] [--cleanup-hook FILE] -- COMMAND [ARG...]
+       [--dump-deadline 120] [--dump-command FILE] [--cleanup-hook FILE]
+       [--cpu-quota 400%] [--memory-max 15G] -- COMMAND [ARG...]
 EOF
   exit 2
 }
 
-HEARTBEAT="" PHASE_FILE="" COVERAGE_FILE="" DIAGNOSTICS="" CLEANUP_HOOK=""
+HEARTBEAT="" PHASE_FILE="" COVERAGE_FILE="" DIAGNOSTICS="" CLEANUP_HOOK="" DUMP_COMMAND=""
+CPU_QUOTA=400% MEMORY_MAX=15G
 TEST_DEADLINE=8100 COVERAGE_DEADLINE=1800 COVERAGE_PROCESSING_DEADLINE=600
 PROGRESS_DEADLINE=1500 DUMP_DEADLINE=120
 while [ "$#" -gt 0 ]; do
@@ -28,7 +30,10 @@ while [ "$#" -gt 0 ]; do
     --coverage-processing-deadline) COVERAGE_PROCESSING_DEADLINE="${2:-}"; shift 2 ;;
     --progress-deadline) PROGRESS_DEADLINE="${2:-}"; shift 2 ;;
     --dump-deadline) DUMP_DEADLINE="${2:-}"; shift 2 ;;
+    --dump-command) DUMP_COMMAND="${2:-}"; shift 2 ;;
     --cleanup-hook) CLEANUP_HOOK="${2:-}"; shift 2 ;;
+    --cpu-quota) CPU_QUOTA="${2:-}"; shift 2 ;;
+    --memory-max) MEMORY_MAX="${2:-}"; shift 2 ;;
     --) shift; break ;;
     *) usage ;;
   esac
@@ -44,6 +49,8 @@ done
 [ "$(id -u)" -eq 0 ] || { echo "test-watchdog: root systemd manager access required" >&2; exit 77; }
 command -v systemd-run >/dev/null || exit 77
 command -v systemctl >/dev/null || exit 77
+[[ "$CPU_QUOTA" =~ ^[1-9][0-9]*%$ ]] || usage
+[[ "$MEMORY_MAX" =~ ^[1-9][0-9]*[KMG]$ ]] || usage
 
 mkdir -p "$DIAGNOSTICS"
 EVENTS="$DIAGNOSTICS/watchdog-events.tsv"
@@ -73,11 +80,13 @@ kill_scope() {
   return 1
 }
 collect_dump() {
-  local leader
+  local leader dump_tool
   leader=$(systemctl show "$SERVICE" -p MainPID --value 2>/dev/null || true)
   [[ "$leader" =~ ^[1-9][0-9]*$ ]] || return 0
-  if command -v dotnet-dump >/dev/null; then
-    timeout --kill-after=5 "$DUMP_DEADLINE" dotnet-dump collect -p "$leader" \
+  dump_tool="$DUMP_COMMAND"
+  [ -n "$dump_tool" ] || dump_tool=$(command -v dotnet-dump || true)
+  if [ -n "$dump_tool" ]; then
+    timeout --kill-after=5 "$DUMP_DEADLINE" "$dump_tool" collect -p "$leader" \
       -o "$DIAGNOSTICS/hang.dmp" >> "$DIAGNOSTICS/dump.log" 2>&1 \
       || event dump_failed_or_timed_out "pid=$leader"
   else
@@ -106,7 +115,8 @@ touch "$HEARTBEAT"
 printf 'test\n' > "$PHASE_FILE"
 event start "service=$SERVICE"
 systemd-run --unit="$UNIT" --collect --wait --service-type=exec --quiet \
-  --property=KillMode=control-group --property=TimeoutStopSec=15s -- "$@" &
+  --property=KillMode=control-group --property=TimeoutStopSec=15s \
+  --property="CPUQuota=$CPU_QUOTA" --property="MemoryMax=$MEMORY_MAX" -- "$@" &
 LAUNCHER_PID=$!
 
 while kill -0 "$LAUNCHER_PID" 2>/dev/null; do
