@@ -25,18 +25,18 @@ no_scope_processes() { ! systemctl list-units 'tier0-test-*' --state=running --n
 clean_followup() {
   local d="$1/followup"
   mkdir -p "$d"
-  SCENARIO=success "$WATCHDOG" --heartbeat "$d/hb" --phase-file "$d/phase" \
+  "$WATCHDOG" --heartbeat "$d/hb" --phase-file "$d/phase" \
     --coverage "$d/coverage.xml" --diagnostics "$d/diag" --test-deadline 20 \
     --coverage-deadline 20 --coverage-processing-deadline 20 --progress-deadline 8 \
-    --dump-deadline 2 -- "$FIXTURE" "$d"
+    --dump-deadline 2 -- "$FIXTURE" "$d" success
 }
 run_fault() {
   local name="$1" expected="$2"; shift 2
   local d="$WORK/$name" rc
   mkdir -p "$d"
   set +e
-  SCENARIO="$name" "$WATCHDOG" --heartbeat "$d/hb" --phase-file "$d/phase" \
-    --coverage "$d/coverage.xml" --diagnostics "$d/diag" "$@" -- "$FIXTURE" "$d"
+  "$WATCHDOG" --heartbeat "$d/hb" --phase-file "$d/phase" \
+    --coverage "$d/coverage.xml" --diagnostics "$d/diag" "$@" -- "$FIXTURE" "$d" "$name"
   rc=$?
   set -e
   [ "$rc" -eq "$expected" ] && no_scope_processes && clean_followup "$d"

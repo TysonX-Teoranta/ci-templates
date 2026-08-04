@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-HB="$1/hb" PHASE="$1/phase" COVERAGE="$1/coverage.xml"
+HB="$1/hb" PHASE="$1/phase" COVERAGE="$1/coverage.xml" SCENARIO="${2:-success}"
 coverage() { printf '<coverage><packages><package><classes><class name="Fixture"><lines><line number="1" hits="1"/></lines></class></classes></package></packages></coverage>\n' > "$COVERAGE"; }
 beat_for() { local seconds="$1"; for _ in $(seq 1 "$seconds"); do touch "$HB"; sleep 1; done; }
-case "${SCENARIO:-success}" in
+case "$SCENARIO" in
   success) beat_for 1; coverage ;;
   testhost_unresponsive) sleep 30 ;;
   coverlet_wedge) printf 'coverage\n' > "$PHASE"; touch "$HB"; sleep 30 ;;
