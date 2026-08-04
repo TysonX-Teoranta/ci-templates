@@ -66,7 +66,7 @@ jobs:
       - name: Restore and build matching testhost and Coverlet fixture
         working-directory: cicd/watchdog
         run: |
-          dotnet restore fixture/Tier0.Watchdog.Fixture.csproj --locked-mode=false
+          dotnet restore fixture/Tier0.Watchdog.Fixture.csproj
           dotnet build fixture/Tier0.Watchdog.Fixture.csproj -c Release --no-restore
           dotnet list fixture/Tier0.Watchdog.Fixture.csproj package > "$RUNNER_TEMP/watchdog-preflight/packages.txt"
           grep -Eq 'coverlet.collector +10\.0\.1 +10\.0\.1' "$RUNNER_TEMP/watchdog-preflight/packages.txt"
