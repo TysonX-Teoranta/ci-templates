@@ -34,7 +34,7 @@ jobs:
       - name: Install production SDK
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
-          dotnet-version: '10.0.110'
+          global-json-file: cicd/watchdog/global.json
 
       - name: Prove disposable environment and parity
         shell: bash
@@ -44,14 +44,14 @@ jobs:
           {
             echo "arch=$RUNNER_ARCH"
             echo "os=$(. /etc/os-release; echo "$VERSION_ID")"
-            echo "sdk=$(dotnet --version)"
+            echo "sdk=$(cd cicd/watchdog && dotnet --version)"
             echo "cpus=$(nproc)"
             echo "memory_gib=$(awk '/MemTotal/ {print int($2 / 1024 / 1024)}' /proc/meminfo)"
             echo "systemd=$(systemctl is-system-running 2>/dev/null || true)"
           } | tee "$RUNNER_TEMP/watchdog-preflight/parity.txt"
           test "$RUNNER_ARCH" = ARM64
           test "$(. /etc/os-release; echo "$VERSION_ID")" = 24.04
-          test "$(dotnet --version)" = 10.0.110
+          test "$(cd cicd/watchdog && dotnet --version)" = 10.0.110
           test "$(nproc)" -eq 4
           test "$(awk '/MemTotal/ {print int($2 / 1024 / 1024)}' /proc/meminfo)" -ge 14
           SYSTEM_STATE=$(systemctl is-system-running 2>/dev/null || true)
