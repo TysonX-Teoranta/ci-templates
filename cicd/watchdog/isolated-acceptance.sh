@@ -26,7 +26,11 @@ else
 fi
 PASS=0 FAIL=0
 FIXTURE_BIN="$CICD_ROOT/watchdog/fixture/bin"
+BASELINE_WARMUP="$WORK/baseline-warmup"
+mkdir -p "$BASELINE_WARMUP"
+"$REAL_FIXTURE" "$BASELINE_WARMUP" success
 TIER0_FIXTURE_HASH=$(find "$FIXTURE_BIN" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')
+printf '%s\n' "$TIER0_FIXTURE_HASH" > "$BASELINE_WARMUP/instrumentation-baseline.sha256"
 export TIER0_FIXTURE_HASH
 record() { if "$@"; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); fi; }
 no_scope_processes() { ! systemctl list-units 'tier0-test-*' --state=running --no-legend | grep -q .; }
