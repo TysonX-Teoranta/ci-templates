@@ -105,6 +105,15 @@ cleanup_instrumentation() {
     timeout --kill-after=5 120 "$CLEANUP_HOOK" >> "$DIAGNOSTICS/cleanup.log" 2>&1
   fi
 }
+publish_evidence() {
+  local group path
+  [ -n "$RUN_AS_USER" ] || return 0
+  group=$(id -gn "$RUN_AS_USER")
+  chown -R "$RUN_AS_USER:$group" "$DIAGNOSTICS"
+  for path in "$HEARTBEAT" "$PHASE_FILE" "$COVERAGE_FILE"; do
+    [ ! -e "$path" ] || chown "$RUN_AS_USER:$group" "$path"
+  done
+}
 finish_infrastructure_failure() {
   local reason="$1"
   event infrastructure_failure "$reason"
@@ -115,7 +124,7 @@ finish_infrastructure_failure() {
   TERMINAL=1
   exit 75
 }
-trap '[ "$TERMINAL" -eq 1 ] || kill_scope || true' EXIT INT TERM
+trap '[ "$TERMINAL" -eq 1 ] || kill_scope || true; publish_evidence || true' EXIT INT TERM
 
 touch "$HEARTBEAT"
 printf 'test\n' > "$PHASE_FILE"
