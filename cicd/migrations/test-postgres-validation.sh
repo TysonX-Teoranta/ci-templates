@@ -13,6 +13,7 @@ mkdir -p "$EVIDENCE"
 export TIER0_POSTGRES_IMAGE=${TIER0_POSTGRES_IMAGE:?digest-pinned PostgreSQL image required}
 export TIER0_APP_BOOT_COMMAND="python3 '$ROOT/fixture/probe-server.py'"
 export TIER0_APP_PROBE_URL=http://127.0.0.1:18081/tier0/database-probe
+export TIER0_APP_PROBE_ATTEMPTS=10
 
 cat > "$EVIDENCE/additive-route.json" <<'JSON'
 {"outcome":"PENDING_ADDITIVE_EMPTY","affectedTables":["Additive"],"candidateMigrations":["20260101_Additive"]}

@@ -50,6 +50,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body = json.dumps(database_probe()).encode()
             self.send_response(200)
         except Exception as error:  # acceptance evidence must retain the concrete probe error
+            print(f"database probe failed: {error!r}", flush=True)
             body = json.dumps({"status": "unhealthy", "error": str(error)}).encode()
             self.send_response(500)
         self.send_header("Content-Type", "application/json")
