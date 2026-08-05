@@ -14,6 +14,8 @@ install -o root -g root -m 0755 "$source_dir/rc-authorization.py" \
   /usr/local/libexec/tier0/rc-authorization.py
 install -o root -g root -m 0755 "$source_dir/rc-authorization-entrypoint.sh" \
   /usr/local/sbin/tier0-rc-authorization
+install -o root -g root -m 0755 "$source_dir/rc-supervisor.sh" \
+  /usr/local/libexec/tier0/rc-supervisor.sh
 if [ ! -s /etc/tier0/auth-signing-key ]; then
   umask 077
   head -c 48 /dev/urandom | base64 > /etc/tier0/auth-signing-key

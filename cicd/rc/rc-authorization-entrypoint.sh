@@ -7,6 +7,10 @@ set -euo pipefail
 [ "$#" -gt 0 ] || exit 2
 
 case "$1" in
+  supervise-start)
+    shift
+    exec /usr/local/libexec/tier0/rc-supervisor.sh start "$@"
+    ;;
   claim)
     # Non-interactive workflow operation. The Python boundary validates the exact
     # authorization, actor, domain, signature, expiry, replay and singleton state.

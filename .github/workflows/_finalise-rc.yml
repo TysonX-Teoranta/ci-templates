@@ -63,49 +63,17 @@ jobs:
         run: |
           lifecycle_id=$(sudo -n /usr/local/sbin/tier0-rc-authorization claim \
             --authorization-id "$AUTHORIZATION_ID" --domain "$DOMAIN" --actor "$ACTOR")
-          printf 'lifecycle_id=%s\n' "$lifecycle_id" >> "$GITHUB_OUTPUT"
-
-  migration:
-    name: Classify and validate exact-source PostgreSQL migrations
-    needs: authorize
-    runs-on: [self-hosted, "${{ inputs.runner_label }}"]
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout exact product source
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0
-      - name: Checkout ci-templates spine
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          repository: TysonX-Teoranta/ci-templates
-          ref: ${{ inputs.spine_ref }}
-          path: .ci-templates
-      - name: Select the dev-server .NET build mutex
-        run: |
-          if [ -x /home/deploy/bin/dotnet ]; then
-            echo /home/deploy/bin >> "$GITHUB_PATH"
+          if ! sudo -n /usr/local/sbin/tier0-rc-authorization supervise-start \
+            "$lifecycle_id" "$ACTOR" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"; then
+            sudo -n /usr/local/sbin/tier0-rc-authorization lifecycle fail \
+              --lifecycle-id "$lifecycle_id" --actor "$ACTOR"
+            exit 1
           fi
-      - name: Structured migration classification and PostgreSQL proof
-        env:
-          TIER0_MIGRATION_EVIDENCE_DIR: ${{ runner.temp }}/tier0-migration-${{ github.run_id }}
-        run: |
-          chmod +x .ci-templates/cicd/migrations/*.sh .ci-templates/cicd/migrations/*.py
-          .ci-templates/cicd/migrations/migration-gate.sh
-      - name: Upload migration evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: migration-evidence-${{ inputs.domain }}
-          path: ${{ runner.temp }}/tier0-migration-${{ github.run_id }}
-          if-no-files-found: error
-          retention-days: 30
+          printf 'lifecycle_id=%s\n' "$lifecycle_id" >> "$GITHUB_OUTPUT"
 
   finalise:
     name: Finalise RC (scrub + hygiene + build-once artifact)
-    needs: [authorize, migration]
+    needs: authorize
     runs-on: [self-hosted, "${{ inputs.runner_label }}"]
     timeout-minutes: 345
     permissions:
@@ -137,6 +105,23 @@ jobs:
             echo /home/deploy/bin >> "$GITHUB_PATH"
           fi
 
+      - name: Structured migration classification and PostgreSQL proof
+        timeout-minutes: 45
+        env:
+          TIER0_MIGRATION_EVIDENCE_DIR: ${{ runner.temp }}/tier0-migration-${{ github.run_id }}
+        run: |
+          chmod +x .ci-templates/cicd/migrations/*.sh .ci-templates/cicd/migrations/*.py
+          .ci-templates/cicd/migrations/migration-gate.sh
+
+      - name: Upload migration evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: migration-evidence-${{ inputs.domain }}
+          path: ${{ runner.temp }}/tier0-migration-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Cut RC (rc-finalise.sh — fat spine)
         id: cut
         env:
@@ -157,29 +142,6 @@ jobs:
           path: ${{ runner.temp }}/tier0-rc-source-evidence-${{ github.run_id }}.json
           if-no-files-found: error
           retention-days: 30
-
-  lifecycle:
-    name: Record terminal singleton lifecycle state
-    needs: [authorize, finalise]
-    if: ${{ always() && needs.authorize.result == 'success' }}
-    runs-on: [self-hosted, "${{ inputs.pulse_runner_label }}"]
-    timeout-minutes: 2
-    steps:
-      - name: Persist terminal state without deleting history
-        env:
-          LIFECYCLE_ID: ${{ needs.authorize.outputs.lifecycle_id }}
-          ACTOR: ${{ github.actor }}
-          FINALISE_RESULT: ${{ needs.finalise.result }}
-        run: |
-          if [ "$FINALISE_RESULT" = success ]; then
-            sudo -n /usr/local/sbin/tier0-rc-authorization lifecycle activate \
-              --lifecycle-id "$LIFECYCLE_ID" --actor "$ACTOR"
-            sudo -n /usr/local/sbin/tier0-rc-authorization lifecycle complete \
-              --lifecycle-id "$LIFECYCLE_ID" --actor "$ACTOR"
-          else
-            sudo -n /usr/local/sbin/tier0-rc-authorization lifecycle fail \
-              --lifecycle-id "$LIFECYCLE_ID" --actor "$ACTOR"
-          fi
 
   notify:
     name: RC finalised notice (essential mail + close the refusal loop)
