@@ -11,7 +11,8 @@ LIFECYCLE_ID=${1:-}; ACTOR=${2:-}; REPOSITORY=${3:-}; RUN_ID=${4:-}
 unit="tier0-rc-supervisor-$LIFECYCLE_ID"
 
 if [ "$mode" = start ]; then
-  exec systemd-run --unit="$unit" --collect --quiet --property=KillMode=control-group -- \
+  exec systemd-run --unit="$unit" --collect --quiet --service-type=exec \
+    --property=KillMode=control-group -- \
     /usr/local/libexec/tier0/rc-supervisor.sh run "$LIFECYCLE_ID" "$ACTOR" "$REPOSITORY" "$RUN_ID"
 fi
 [ "$mode" = run ] || exit 64
