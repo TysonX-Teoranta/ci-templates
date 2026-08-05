@@ -68,11 +68,7 @@ File.WriteAllText(temporary, JsonSerializer.Serialize(new
     classifierVersion = "tier0-structured-v1",
     provider = "Npgsql.EntityFrameworkCore.PostgreSQL",
     migrations,
-}, new JsonSerializerOptions
-{
-    WriteIndented = true,
-    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-}));
+}, SerializationDefaults.IndentedCamelCase));
 File.Move(temporary, outputPath, overwrite: true);
 return 0;
 
@@ -109,3 +105,12 @@ internal sealed record OperationEvidence(
     string? Column,
     bool Additive,
     string Reason);
+
+internal static class SerializationDefaults
+{
+    internal static readonly JsonSerializerOptions IndentedCamelCase = new()
+    {
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
+}
