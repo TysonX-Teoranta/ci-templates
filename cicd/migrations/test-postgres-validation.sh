@@ -44,8 +44,7 @@ INSERT INTO "__EFMigrationsHistory" VALUES ('20260102_Risky') ON CONFLICT DO NOT
 SQL
 export TIER0_FIXTURE_COMMAND='container=$(docker ps --filter label=tier0.disposable=true --format "{{.Names}}");
 test -n "$container";
-docker exec "$container" psql -v ON_ERROR_STOP=1 -U tier0 -d tier0 -c
-"INSERT INTO \"Existing\" (id, value) VALUES (1, '\''preserve-me'\'')"'
+docker exec "$container" psql -v ON_ERROR_STOP=1 -U tier0 -d tier0 -c "INSERT INTO \"Existing\" (id, value) VALUES (1, '\''preserve-me'\'')"'
 GITHUB_RUN_ID=$((${GITHUB_RUN_ID:-1001} + 1)) "$ROOT/postgres-validation.sh" \
   --route "$EVIDENCE/risky-route.json" --candidate-script "$EVIDENCE/risky.sql" \
   --baseline-script "$EVIDENCE/baseline.sql" --evidence "$EVIDENCE/risky-evidence.json"
