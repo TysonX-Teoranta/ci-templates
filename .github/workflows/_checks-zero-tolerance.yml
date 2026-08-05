@@ -328,21 +328,6 @@ jobs:
           print(f"slice discovery: {len(ns)} namespaces -> {sum(1 for b in buckets if b)} slices")
           PY
 
-      - name: Bind coverage evidence to the immutable source
-        if: inputs.test_project != ''
-        run: |
-          COBERTURA=$(find "$GITHUB_WORKSPACE/coverage" -name coverage.cobertura.xml -type f -print -quit)
-          test -n "$COBERTURA"
-          python3 .ci-templates/cicd/lib/source-evidence.py capture \
-            --repo "$GITHUB_WORKSPACE" \
-            --allow-untracked .ci-templates \
-            --artifact "$COBERTURA" \
-            --output "$RUNNER_TEMP/tier0-source-evidence.json"
-          python3 .ci-templates/cicd/lib/source-evidence.py verify \
-            --repo "$GITHUB_WORKSPACE" \
-            --allow-untracked .ci-templates \
-            --artifact "$COBERTURA" \
-            --evidence "$RUNNER_TEMP/tier0-source-evidence.json"
             SLICE_NO=0
             TOTAL_SLICES=$(wc -l < ./coverage/slices.txt)
             : > test-report.txt
@@ -372,6 +357,22 @@ jobs:
               print("::error::coverage report is EMPTY — instrumentation collected nothing")
               sys.exit(1)
           PY
+
+      - name: Bind coverage evidence to the immutable source
+        if: inputs.test_project != ''
+        run: |
+          COBERTURA=$(find "$GITHUB_WORKSPACE/coverage" -name coverage.cobertura.xml -type f -print -quit)
+          test -n "$COBERTURA"
+          python3 .ci-templates/cicd/lib/source-evidence.py capture \
+            --repo "$GITHUB_WORKSPACE" \
+            --allow-untracked .ci-templates \
+            --artifact "$COBERTURA" \
+            --output "$RUNNER_TEMP/tier0-source-evidence.json"
+          python3 .ci-templates/cicd/lib/source-evidence.py verify \
+            --repo "$GITHUB_WORKSPACE" \
+            --allow-untracked .ci-templates \
+            --artifact "$COBERTURA" \
+            --evidence "$RUNNER_TEMP/tier0-source-evidence.json"
 
       - name: Restart LibreTranslate sidecar (if we stopped it)
         if: always()
