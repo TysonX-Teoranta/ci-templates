@@ -292,7 +292,8 @@ if verbose:
     print(f"diff-coverage: {covered}/{total} changed lines covered ({pct:.1f}%); "
           f"{br_covered}/{br_total} changed branches ({bpct:.1f}%)")
     if unmatched:
-        print(f"  {len(unmatched)} changed lines uncovered (0 hits, or file never loaded by any test)")
+        print(f"  {len(unmatched)} changed lines uncovered (0 hits, or file never loaded by any test): "
+              f"{'; '.join(unmatched[:50])}")
     if br_gaps:
         print(f"  {len(br_gaps)} changed branch lines partially covered: {'; '.join(br_gaps[:20])}")
 
