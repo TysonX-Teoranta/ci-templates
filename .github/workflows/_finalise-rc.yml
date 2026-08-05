@@ -114,14 +114,15 @@ jobs:
         timeout-minutes: 45
         env:
           TIER0_MIGRATION_EVIDENCE_DIR: ${{ runner.temp }}/tier0-migration-${{ github.run_id }}
-          TIER0_DOTNET: /home/deploy/bin/dotnet
+          TIER0_DOTNET: /usr/bin/dotnet
         run: |
           mkdir -p "$TIER0_MIGRATION_EVIDENCE_DIR"
           "$TIER0_DOTNET" --list-sdks | \
             tee "$TIER0_MIGRATION_EVIDENCE_DIR/sdk.txt" | \
             grep -F '10.0.110 [/usr/lib/dotnet/sdk]'
           chmod +x .ci-templates/cicd/migrations/*.sh .ci-templates/cicd/migrations/*.py
-          .ci-templates/cicd/migrations/migration-gate.sh \
+          flock -w 2700 /home/deploy/repo/lodgers-ai/.build-lock \
+            .ci-templates/cicd/migrations/migration-gate.sh \
             2>&1 | tee "$TIER0_MIGRATION_EVIDENCE_DIR/gate.log"
 
       - name: Upload migration evidence
