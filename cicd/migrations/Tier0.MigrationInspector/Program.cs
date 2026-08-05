@@ -68,7 +68,11 @@ File.WriteAllText(temporary, JsonSerializer.Serialize(new
     classifierVersion = "tier0-structured-v1",
     provider = "Npgsql.EntityFrameworkCore.PostgreSQL",
     migrations,
-}, new JsonSerializerOptions { WriteIndented = true }));
+}, new JsonSerializerOptions
+{
+    WriteIndented = true,
+    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+}));
 File.Move(temporary, outputPath, overwrite: true);
 return 0;
 

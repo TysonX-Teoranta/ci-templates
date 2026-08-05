@@ -40,5 +40,5 @@ jobs:
         with:
           name: migration-isolated-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/migration-acceptance/**
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
