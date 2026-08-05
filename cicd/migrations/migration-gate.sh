@@ -7,6 +7,7 @@ DECLARATIONS=${TIER0_MIGRATION_DECLARATIONS:-$ROOT/.tier0/migrations/declaration
 EVIDENCE_DIR=${TIER0_MIGRATION_EVIDENCE_DIR:-${RUNNER_TEMP:-/tmp}/tier0-migration-evidence}
 SPINE=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 BASELINE_WORKTREE=""
+DOTNET=${TIER0_DOTNET:-dotnet}
 
 cleanup() {
   if [ -n "$BASELINE_WORKTREE" ] && [ -d "$BASELINE_WORKTREE" ]; then
@@ -15,7 +16,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for tool in git jq python3 dotnet sha256sum; do command -v "$tool" >/dev/null || { echo "missing required tool: $tool" >&2; exit 69; }; done
+for tool in git jq python3 sha256sum; do command -v "$tool" >/dev/null || { echo "missing required tool: $tool" >&2; exit 69; }; done
+if [[ "$DOTNET" == */* ]]; then
+  [ -x "$DOTNET" ] || { echo "configured dotnet executable is unavailable: $DOTNET" >&2; exit 69; }
+else
+  command -v "$DOTNET" >/dev/null || { echo "missing required tool: $DOTNET" >&2; exit 69; }
+fi
 [ -f "$CONFIG" ] || { echo "migration baseline config missing; fail closed: $CONFIG" >&2; exit 78; }
 test -z "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all -- ':!.ci-templates')" \
   || { echo "source checkout is not immutable" >&2; exit 1; }
@@ -29,9 +35,9 @@ MIGRATION_ASSEMBLY=$(jq -r '.migrationAssembly' "$CONFIG")
 DB_CONTEXT=$(jq -r '.dbContext // empty' "$CONFIG")
 mkdir -p "$EVIDENCE_DIR"
 
-dotnet build "$ROOT/$STARTUP_PROJECT" -c Release
-dotnet build "$SPINE/migrations/Tier0.MigrationInspector/Tier0.MigrationInspector.csproj" -c Release
-dotnet run --project "$SPINE/migrations/Tier0.MigrationInspector/Tier0.MigrationInspector.csproj" \
+"$DOTNET" build "$ROOT/$STARTUP_PROJECT" -c Release
+"$DOTNET" build "$SPINE/migrations/Tier0.MigrationInspector/Tier0.MigrationInspector.csproj" -c Release
+"$DOTNET" run --project "$SPINE/migrations/Tier0.MigrationInspector/Tier0.MigrationInspector.csproj" \
   -c Release --no-build -- --assembly "$ROOT/$MIGRATION_ASSEMBLY" \
   --output "$EVIDENCE_DIR/inspection.json"
 
@@ -54,7 +60,7 @@ if [ "$OUTCOME" = QUARANTINED_NO_BASELINE ]; then
 fi
 
 EFTOOL="$EVIDENCE_DIR/eftool"
-dotnet tool install dotnet-ef --tool-path "$EFTOOL" >/dev/null
+"$DOTNET" tool install dotnet-ef --tool-path "$EFTOOL" >/dev/null
 CONTEXT_ARGS=()
 [ -n "$DB_CONTEXT" ] && CONTEXT_ARGS=(--context "$DB_CONTEXT")
 "$EFTOOL/dotnet-ef" migrations script --idempotent \
@@ -70,7 +76,7 @@ if [ "$OUTCOME" = PENDING_POPULATED_UPGRADE ]; then
   [ -n "$BASELINE_SHA" ] || exit 78
   BASELINE_WORKTREE=$(mktemp -d "${RUNNER_TEMP:-/tmp}/tier0-baseline.XXXXXX")
   git -C "$ROOT" worktree add --detach "$BASELINE_WORKTREE" "$BASELINE_SHA" >/dev/null
-  dotnet restore "$BASELINE_WORKTREE/$STARTUP_PROJECT"
+  "$DOTNET" restore "$BASELINE_WORKTREE/$STARTUP_PROJECT"
   "$EFTOOL/dotnet-ef" migrations script --idempotent \
     --project "$BASELINE_WORKTREE/$DB_PROJECT" --startup-project "$BASELINE_WORKTREE/$STARTUP_PROJECT" \
     --configuration Release "${CONTEXT_ARGS[@]}" --output "$EVIDENCE_DIR/baseline.sql"
@@ -78,7 +84,7 @@ if [ "$OUTCOME" = PENDING_POPULATED_UPGRADE ]; then
 fi
 
 PUBLISH="$EVIDENCE_DIR/publish"
-dotnet publish "$ROOT/$STARTUP_PROJECT" -c Release -o "$PUBLISH" \
+"$DOTNET" publish "$ROOT/$STARTUP_PROJECT" -c Release -o "$PUBLISH" \
   /p:Tier0SourceSha="$SOURCE_SHA" /p:Tier0BuildId="migration-${GITHUB_RUN_ID:-local}" \
   /p:Tier0BuiltAt="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 export TIER0_POSTGRES_IMAGE
