@@ -20,9 +20,12 @@ trap cleanup EXIT HUP INT TERM
 
 IFS= read -r -s -p "Tier 0 TOTP Base32 seed: " secret
 echo
-secret=$(printf '%s' "$secret" | tr '[:lower:]' '[:upper:]')
+secret=$(printf '%s' "$secret" | tr -d '[:space:]-' | tr '[:lower:]' '[:upper:]')
+while [[ "$secret" == *= ]]; do
+  secret=${secret%=}
+done
 case "$secret" in
-  ''|*[!A-Z2-7]*) echo "seed must be unpadded Base32" >&2; exit 64 ;;
+  ''|*[!A-Z2-7]*) echo "seed contains a character outside the Base32 alphabet" >&2; exit 64 ;;
 esac
 [ "${#secret}" -ge 16 ] || { echo "seed is too short" >&2; exit 64; }
 
