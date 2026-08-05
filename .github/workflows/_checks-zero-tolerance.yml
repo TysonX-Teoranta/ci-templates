@@ -80,6 +80,11 @@ on:
         required: false
         type: boolean
         default: false
+      tier0_watchdog:
+        description: "run the single-project coverage command inside the proven primary-runner watchdog"
+        required: false
+        type: boolean
+        default: false
 
 # Serialize the gate on the shared dev box. All zero-tolerance runs execute on the
 # TWO self-hosted tysonx-dev runners now serve this gate (dev cax31 + the caged
@@ -285,12 +290,36 @@ jobs:
               ;;
             *)
           if [ "${SLICES:-1}" -le 1 ]; then
-            # shellcheck disable=SC2086
-            coverlet "$TDIR" --target dotnet \
-              --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 25m --blame-hang-dump-type mini" \
-              --format cobertura --output ./coverage/ \
-              $INCLUDES 2>&1 | tee test-report.txt
-            test "${PIPESTATUS[0]}" -eq 0
+            if [ "${{ inputs.tier0_watchdog }}" = true ]; then
+              run_watchdog() {
+                local evidence="$RUNNER_TEMP/tier0-watchdog-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$1"
+                sudo -n /usr/local/sbin/tier0-test-watchdog "$evidence" -- \
+                  "$GITHUB_WORKSPACE/.ci-templates/cicd/watchdog/coverage-command.sh" \
+                  "$evidence" "$GITHUB_WORKSPACE/coverage/coverage.cobertura.xml" -- \
+                  coverlet "$TDIR" --target dotnet \
+                    --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 25m --blame-hang-dump-type mini" \
+                    --format cobertura --output ./coverage/ $INCLUDES
+              }
+              set +e
+              run_watchdog 1 2>&1 | tee test-report.txt
+              WATCHDOG_STATUS=${PIPESTATUS[0]}
+              set -e
+              if [ "$WATCHDOG_STATUS" -eq 75 ]; then
+                echo "watchdog classified infrastructure failure; starting sole retry" | tee -a test-report.txt
+                set +e
+                run_watchdog 2 2>&1 | tee -a test-report.txt
+                WATCHDOG_STATUS=${PIPESTATUS[0]}
+                set -e
+              fi
+              test "$WATCHDOG_STATUS" -eq 0
+            else
+              # shellcheck disable=SC2086
+              coverlet "$TDIR" --target dotnet \
+                --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 25m --blame-hang-dump-type mini" \
+                --format cobertura --output ./coverage/ \
+                $INCLUDES 2>&1 | tee test-report.txt
+              test "${PIPESTATUS[0]}" -eq 0
+            fi
           else
             # SLICED RUN: the whole suite in one testhost peaks too high for the
             # smaller self-hosted boxes (OOM at any cgroup ceiling below ~10G).
