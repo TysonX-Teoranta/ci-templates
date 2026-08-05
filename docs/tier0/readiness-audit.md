@@ -59,3 +59,6 @@ labels. Primary promotion is restricted to non-destructive canaries after the re
   blocking watchdog enforcement is selected by the Lodgers caller.
 - TOTP gate installation remains an operator action under the existing Pulse root-boundary policy. The reviewed
   root installation payload reuses the existing seed; automation has not replaced or exposed it.
+- Current disposable PostgreSQL acceptance run `30971253097` passed both migration routes plus the
+  fixture-generation and EF script-generation fail-closed cases. It used the immutable PostgreSQL 18 manifest
+  `sha256:3f55f8895c4ed50603e2fbdfc72fffeeaba3173321fee5cb825bbbeb30d9d854`.

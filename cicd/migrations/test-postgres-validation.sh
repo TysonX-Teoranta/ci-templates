@@ -42,6 +42,8 @@ cat > "$EVIDENCE/risky.sql" <<'SQL'
 ALTER TABLE "Existing" ADD COLUMN IF NOT EXISTS optional text NULL;
 INSERT INTO "__EFMigrationsHistory" VALUES ('20260102_Risky') ON CONFLICT DO NOTHING;
 SQL
+# Expansion is intentionally deferred to postgres-validation.sh's isolated fixture shell.
+# shellcheck disable=SC2016
 export TIER0_FIXTURE_COMMAND='container=$(docker ps --filter label=tier0.disposable=true --format "{{.Names}}");
 test -n "$container";
 docker exec "$container" psql -v ON_ERROR_STOP=1 -U tier0 -d tier0 -c "INSERT INTO \"Existing\" (id, value) VALUES (1, '\''preserve-me'\'')"'

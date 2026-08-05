@@ -120,8 +120,10 @@ setsid bash -euo pipefail -c "$TIER0_APP_BOOT_COMMAND" >"$WORK/app.log" 2>&1 &
 APP_PID=$!
 PROBE_ATTEMPTS=${TIER0_APP_PROBE_ATTEMPTS:-90}
 case "$PROBE_ATTEMPTS" in ''|*[!0-9]*) echo "invalid application probe attempt count" >&2; exit 64 ;; esac
-[ "$PROBE_ATTEMPTS" -ge 1 ] && [ "$PROBE_ATTEMPTS" -le 90 ] \
-  || { echo "application probe attempts must be between 1 and 90" >&2; exit 64; }
+if [ "$PROBE_ATTEMPTS" -lt 1 ] || [ "$PROBE_ATTEMPTS" -gt 90 ]; then
+  echo "application probe attempts must be between 1 and 90" >&2
+  exit 64
+fi
 for _ in $(seq 1 "$PROBE_ATTEMPTS"); do
   kill -0 "$APP_PID" 2>/dev/null || { tail -80 "$WORK/app.log" >&2; exit 1; }
   if curl -fsS -X POST -H "X-Tier0-Probe-Token: $PROBE_TOKEN" "$TIER0_APP_PROBE_URL" > "$WORK/probe.json"; then break; fi

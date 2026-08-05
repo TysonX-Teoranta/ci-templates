@@ -27,3 +27,22 @@ Enforcement: disabled pending the complete ordered end-to-end proof.
 - No new repository was created under `/home/deploy/repo`.
 - The Pulse root TOTP gate was not installed or replaced by automation.
 - Blocking enforcement remains off until every acceptance scenario in the approved plan passes.
+
+## Acceptance evidence
+
+- Disposable watchdog battery: Actions run `30967602441`, three complete repetitions on
+  `ubuntu-24.04-arm`; all fault scopes were reaped and every immediate follow-up suite passed.
+- Disposable migration battery: Actions run `30971253097`; additive-empty, populated-upgrade,
+  structured unknown-to-risky routing, downgrade rejection, missing-baseline quarantine,
+  fixture failure, and EF script-generation failure all produced their required outcomes.
+- Exact-SHA deployment harness: branch advance, unavailable object, published-file tamper, and
+  post-flip identity mismatch/rollback all passed.
+- Authorization and exact-source self-tests: 8 authorization, 5 source-evidence, and 5 migration
+  contract scenarios passed on 2026-08-05.
+
+## Remaining activation boundary
+
+The reviewed Pulse payload is operator-only. Until it is installed and its non-destructive canary
+passes, an authorized singleton devRC and its 359-minute external supervisor cannot be exercised.
+The candidate workflows therefore remain referenced only by the acceptance branches and blocking
+enforcement remains disabled.
