@@ -65,6 +65,12 @@ def main() -> None:
         validate_declaration(migration, declaration)
 
     risky = [item["migration"] for item in changed if item["classification"] == "data-sensitive"]
+    affected_tables = sorted({
+        table
+        for item in changed
+        for table in declarations[item["migration"]]["affected_tables"]
+        if isinstance(table, str) and table
+    })
     if not changed:
         outcome, route = "NOT_REQUIRED", "none"
     elif risky and not args.baseline_source_sha:
@@ -82,6 +88,7 @@ def main() -> None:
         "previousAcceptedSourceSha": args.baseline_source_sha or None,
         "candidateMigrations": [item["migration"] for item in changed],
         "riskyMigrations": risky,
+        "affectedTables": affected_tables,
         "route": route,
         "outcome": outcome,
     }
