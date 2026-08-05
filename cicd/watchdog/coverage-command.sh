@@ -50,10 +50,10 @@ PY
   then
     SEEN_TESTHOST=1
     if [ "$LAST_PHASE" != test ]; then printf 'test\n' > "$PHASE"; LAST_PHASE="test"; fi
-  elif [ "$SEEN_TESTHOST" -eq 1 ] && [ "$LAST_PHASE" != coverage-processing ]; then
-    printf 'coverage-processing\n' > "$PHASE"
+  elif [ "$SEEN_TESTHOST" -eq 1 ] && [ "$LAST_PHASE" != coverage ]; then
+    printf 'coverage\n' > "$PHASE"
     date +%s > "$HEARTBEAT"
-    LAST_PHASE="coverage-processing"
+    LAST_PHASE="coverage"
   fi
   sleep 2
 done
