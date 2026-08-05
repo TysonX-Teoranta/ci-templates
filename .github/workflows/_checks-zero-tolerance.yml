@@ -227,11 +227,12 @@ jobs:
           # killing the runner mid-run ("operation was canceled" + orphaned coverlet after
           # tests already passed). Workstation GC uses one heap → far lower peak memory.
           DOTNET_gcServer: '0'
-          # GC env vars are read as HEX (decimal only in runtimeconfig.json).
-          # 0x2D = 45% ~= 7 GB capped BELOW the lodgers testhost peak (7.6 GB observed)
-          # and OOM'd the suite at ~20% through (#89). 0x50 = 80% ~= 12.4 GB keeps a real
-          # runaway cap while clearing the peak. Do not lower without re-measuring lodgers.
-          DOTNET_GCHeapHardLimitPercent: '50'
+          # GC env vars are read as HEX. 0x70 = 112% = NO CAP — this is deliberate and is
+          # the only value proven green on lodgers (run 30779316883: 3303 tests, 0 failed).
+          # Real caps below the testhost peak OOM the suite: 0x2D=7GB -> 56-97 failures
+          # (#89), 0x50=12.4GB -> 10 failures (#95). Do NOT set a real cap without first
+          # measuring the lodgers peak under coverlet offline instrumentation.
+          DOTNET_GCHeapHardLimitPercent: '70'
         run: |
           # Free the LibreTranslate sidecar's ~1.5 GiB for the coverage window if this
           # runner is permitted to (best-effort; a no-op where the service/perm is absent).
