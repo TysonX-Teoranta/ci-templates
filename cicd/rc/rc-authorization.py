@@ -167,7 +167,7 @@ def claim(args: argparse.Namespace) -> None:
         if existing:
             age = now - existing["last_heartbeat"]
             fail(f"singleton collision: lifecycle={existing['id']} state={existing['state']} heartbeat_age={age}s")
-        lifecycle_id = secrets.token_urlsafe(18)
+        lifecycle_id = "lc_" + secrets.token_urlsafe(18)
         db.execute(
             "INSERT INTO lifecycles VALUES(?,?,?,?,?,?,?,NULL,NULL)",
             (lifecycle_id, args.domain, "building", row["id"], row["actor"], now, now),
