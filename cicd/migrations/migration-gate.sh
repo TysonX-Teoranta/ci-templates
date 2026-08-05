@@ -5,7 +5,7 @@ ROOT=${GITHUB_WORKSPACE:-$PWD}
 CONFIG=${TIER0_MIGRATION_CONFIG:-$ROOT/.tier0/migrations/baseline.json}
 DECLARATIONS=${TIER0_MIGRATION_DECLARATIONS:-$ROOT/.tier0/migrations/declarations}
 EVIDENCE_DIR=${TIER0_MIGRATION_EVIDENCE_DIR:-${RUNNER_TEMP:-/tmp}/tier0-migration-evidence}
-SPINE=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+SPINE=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 BASELINE_WORKTREE=""
 
 cleanup() {
