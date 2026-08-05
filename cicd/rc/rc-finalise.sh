@@ -44,6 +44,15 @@ DEV_BASE="$(domain_field "$DOMAIN" dev_base)"
 TEST_PROJECT="$(domain_field "$DOMAIN" test_project)"
 HYGIENE="$(domain_field "$DOMAIN" hygiene)"
 RID="${RID:-$(domain_field "$DOMAIN" rid)}"; RID="${RID:-linux-x64}"
+if [ "$DRY_RUN" = "1" ]; then
+  case "$(uname -m)" in
+    x86_64|amd64) RID="linux-x64" ;;
+    aarch64|arm64) RID="linux-arm64" ;;
+    *) die "unsupported dry-run smoke architecture: $(uname -m)" 2 ;;
+  esac
+  log "DRY_RUN=1 — publishing for runner architecture ($RID) so the exact artifact can be smoke-booted"
+fi
+
 [ -n "$APP_PROJECT" ] || die "domain '$DOMAIN' has no app_project — artifact lane is dotnet-only" 2
 DEV_BRANCH="${DEV_BASE#origin/}"
 [ -n "$DEV_BRANCH" ] || die "domain '$DOMAIN' has no dev_base in domains.yml" 2
