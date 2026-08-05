@@ -1,0 +1,44 @@
+name: Migration isolated acceptance
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/migration-isolated-acceptance.yml'
+      - 'cicd/migrations/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migration-isolated-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  postgres-battery:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - name: Checkout candidate spine
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Run contract and structured-classifier acceptance
+        run: |
+          python3 cicd/migrations/test-migration-contract.py
+          ./cicd/migrations/test-inspector.sh
+
+      - name: Run disposable PostgreSQL acceptance
+        env:
+          TIER0_POSTGRES_IMAGE: postgres:18.0-bookworm@sha256:3f55d35b1c710b66e5b8238c56f9d66b741f5a821f857eedff150313bc857af5
+          TIER0_MIGRATION_ACCEPTANCE_ROOT: ${{ runner.temp }}/migration-acceptance
+        run: ./cicd/migrations/test-postgres-validation.sh
+
+      - name: Retain migration evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: migration-isolated-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/migration-acceptance/**
+          if-no-files-found: error
+          retention-days: 30
