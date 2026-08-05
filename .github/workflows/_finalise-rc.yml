@@ -62,7 +62,7 @@ jobs:
           ACTOR: ${{ github.actor }}
         run: |
           lifecycle_id=$(sudo -n /usr/local/sbin/tier0-rc-authorization claim \
-            --authorization-id "$AUTHORIZATION_ID" --domain "$DOMAIN" --actor "$ACTOR")
+            --authorization-id="$AUTHORIZATION_ID" --domain "$DOMAIN" --actor "$ACTOR")
           if ! sudo -n /usr/local/sbin/tier0-rc-authorization supervise-start \
             "$lifecycle_id" "$ACTOR" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"; then
             sudo -n /usr/local/sbin/tier0-rc-authorization lifecycle fail \

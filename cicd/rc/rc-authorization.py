@@ -119,7 +119,9 @@ def issue(args: argparse.Namespace) -> None:
         fail("TOTP rejected")
     if args.ttl < 30 or args.ttl > 600:
         fail("authorization TTL must be between 30 and 600 seconds")
-    auth_id = secrets.token_urlsafe(24)
+    # The stable prefix prevents an opaque value beginning with "-" from being
+    # interpreted as an argparse option by any downstream shell boundary.
+    auth_id = "t0_" + secrets.token_urlsafe(24)
     nonce_hash = hashlib.sha256(secrets.token_bytes(32)).hexdigest()
     expires = now + args.ttl
     sig = signature(secret_value("TIER0_AUTH_SIGNING_KEY", "/etc/tier0/auth-signing-key"), auth_id, args.domain,
@@ -133,7 +135,9 @@ def issue(args: argparse.Namespace) -> None:
               auth_id=auth_id)
     print(auth_id)
     if args.dispatch_repo:
-        command = ["gh", "workflow", "run", args.workflow, "-R", args.dispatch_repo,
+        command = ["/usr/sbin/runuser", "-u", "tysonxpulse", "--", "/usr/bin/env",
+                   "HOME=/home/deploy", "GH_CONFIG_DIR=/home/deploy/.config/gh",
+                   "gh", "workflow", "run", args.workflow, "-R", args.dispatch_repo,
                    "--ref", args.ref, "-f", f"authorization_id={auth_id}"]
         subprocess.run(command, check=True)
 
