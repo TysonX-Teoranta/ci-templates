@@ -76,6 +76,11 @@ jobs:
     needs: authorize
     runs-on: [self-hosted, "${{ inputs.runner_label }}"]
     timeout-minutes: 345
+    env:
+      # The runner also has a user-local preview SDK. Pin host resolution to the
+      # production SDK that satisfies the product's global.json.
+      DOTNET_ROOT: /usr/lib/dotnet
+      DOTNET_MULTILEVEL_LOOKUP: 0
     permissions:
       contents: write   # RC tag push + prerelease create
     outputs:
