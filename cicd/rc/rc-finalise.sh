@@ -148,7 +148,7 @@ GATES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gates"
 # shellcheck disable=SC1091
 DEP_FLOOR="$( ( [ -r .github/scripts/ci/rc.conf ] && . .github/scripts/ci/rc.conf; printf '%s' "${RC_VULN_FLOOR:-High}" ) )"
 log "central gate: dependency vulnerabilities (floor $DEP_FLOOR)"
-PROJECT="$SOLUTION" RC_VULN_FLOOR="$DEP_FLOOR" bash "$GATES_DIR/rc-gate-dep-vuln.sh" \
+PROJECT="$APP_PROJECT" RC_VULN_FLOOR="$DEP_FLOOR" bash "$GATES_DIR/rc-gate-dep-vuln.sh" \
   || die "dependency-vulnerability gate refused the RC" 1
 
 # Licence compliance runs LATER (post-SBOM): it reads the CycloneDX SBOM instead of the
