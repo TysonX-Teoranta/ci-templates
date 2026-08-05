@@ -171,6 +171,12 @@ jobs:
             --allow-untracked .ci-templates \
             --output "$RUNNER_TEMP/tier0-source-evidence.json"
 
+      - name: Select the dev-server .NET build mutex
+        run: |
+          if [ -x /home/deploy/bin/dotnet ]; then
+            echo /home/deploy/bin >> "$GITHUB_PATH"
+          fi
+
       - name: Zero-tolerance code-quality gate (checks.sh — build + analyzers + comment-density)
         id: gate
         env:

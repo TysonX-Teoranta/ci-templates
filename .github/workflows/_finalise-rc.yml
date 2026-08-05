@@ -83,6 +83,11 @@ jobs:
           repository: TysonX-Teoranta/ci-templates
           ref: ${{ inputs.spine_ref }}
           path: .ci-templates
+      - name: Select the dev-server .NET build mutex
+        run: |
+          if [ -x /home/deploy/bin/dotnet ]; then
+            echo /home/deploy/bin >> "$GITHUB_PATH"
+          fi
       - name: Structured migration classification and PostgreSQL proof
         env:
           TIER0_MIGRATION_EVIDENCE_DIR: ${{ runner.temp }}/tier0-migration-${{ github.run_id }}
@@ -125,6 +130,12 @@ jobs:
           repository: TysonX-Teoranta/ci-templates
           ref: ${{ inputs.spine_ref }}
           path: .ci-templates
+
+      - name: Select the dev-server .NET build mutex
+        run: |
+          if [ -x /home/deploy/bin/dotnet ]; then
+            echo /home/deploy/bin >> "$GITHUB_PATH"
+          fi
 
       - name: Cut RC (rc-finalise.sh — fat spine)
         id: cut
