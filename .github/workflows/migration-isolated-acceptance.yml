@@ -57,7 +57,7 @@ jobs:
           set -e
           test "$status" -ne 0
           test ! -f "$root/evidence/evidence.json"
-          grep -Eq 'No DbContext|Unable to create|migrations script' "$root/gate.log"
+          grep -Eq 'No DbContext|Unable to create|Microsoft.EntityFrameworkCore.Design' "$root/gate.log"
 
       - name: Retain generation-failure evidence
         if: always()
