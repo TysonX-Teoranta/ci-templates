@@ -299,10 +299,13 @@ jobs:
             if [ "${{ inputs.tier0_watchdog }}" = true ]; then
               run_watchdog() {
                 local evidence="$RUNNER_TEMP/tier0-watchdog-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$1"
-                sudo -n /usr/local/sbin/tier0-test-watchdog "$evidence" -- \
-                  "$GITHUB_WORKSPACE/.ci-templates/cicd/watchdog/coverage-command.sh" \
-                  "$evidence" "$GITHUB_WORKSPACE/coverage/coverage.cobertura.xml" -- \
-                  coverlet "$TDIR" --target dotnet \
+                local coverlet_bin
+                coverlet_bin=$(command -v coverlet)
+                flock -w 1800 /home/deploy/repo/lodgers-ai/.build-lock \
+                  sudo -n /usr/local/sbin/tier0-test-watchdog "$evidence" -- \
+                    "$GITHUB_WORKSPACE/.ci-templates/cicd/watchdog/coverage-command.sh" \
+                    "$evidence" "$GITHUB_WORKSPACE/coverage/coverage.cobertura.xml" -- \
+                    "$coverlet_bin" "$TDIR" --target /usr/bin/dotnet \
                     --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 25m --blame-hang-dump-type mini" \
                     --format cobertura --output ./coverage/ "${INCLUDES[@]}"
               }
