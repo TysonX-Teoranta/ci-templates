@@ -14,10 +14,16 @@ def git(repo: Path, *args: str) -> str:
     return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
 
 
-def identity(repo: Path) -> dict[str, str]:
-    status = git(repo, "status", "--porcelain=v1", "--untracked-files=all")
-    if status:
-        raise SystemExit(f"source checkout is modified; refusing evidence:\n{status}")
+def identity(repo: Path, allowed_untracked: tuple[str, ...] = ()) -> dict[str, str]:
+    status_lines = git(repo, "status", "--porcelain=v1", "--untracked-files=all").splitlines()
+    allowed = tuple(path.rstrip("/") + "/" for path in allowed_untracked)
+    unexpected = []
+    for line in status_lines:
+        if line.startswith("?? ") and any(line[3:].startswith(prefix) for prefix in allowed):
+            continue
+        unexpected.append(line)
+    if unexpected:
+        raise SystemExit("source checkout is modified; refusing evidence:\n" + "\n".join(unexpected))
     return {
         "sourceSha": git(repo, "rev-parse", "HEAD^{commit}"),
         "treeSha": git(repo, "rev-parse", "HEAD^{tree}"),
@@ -58,7 +64,7 @@ def capture(args: argparse.Namespace) -> None:
     output = Path(args.output).resolve()
     if repo == output or repo in output.parents:
         raise SystemExit("evidence output must be outside the immutable source checkout")
-    data = {"schema": 1, **identity(repo)}
+    data = {"schema": 1, **identity(repo, tuple(args.allow_untracked))}
     data["testedSourceSha"] = data["sourceSha"]
     data["testedTreeSha"] = data["treeSha"]
     if args.artifact:
@@ -73,7 +79,7 @@ def capture(args: argparse.Namespace) -> None:
 def verify(args: argparse.Namespace) -> None:
     repo = Path(args.repo).resolve()
     data = json.loads(Path(args.evidence).read_text(encoding="utf-8"))
-    current = identity(repo)
+    current = identity(repo, tuple(args.allow_untracked))
     required = {
         "sourceSha": current["sourceSha"], "treeSha": current["treeSha"],
         "testedSourceSha": current["sourceSha"], "testedTreeSha": current["treeSha"],
@@ -95,6 +101,7 @@ for name in ("capture", "verify"):
     command = sub.add_parser(name)
     command.add_argument("--repo", required=True)
     command.add_argument("--artifact")
+    command.add_argument("--allow-untracked", action="append", default=[])
     if name == "capture":
         command.add_argument("--output", required=True); command.set_defaults(func=capture)
     else:

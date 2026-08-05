@@ -66,5 +66,17 @@ class SourceEvidenceTests(unittest.TestCase):
         self.run_cli("verify", "--repo", self.repo, "--artifact", self.artifact,
                      "--evidence", self.evidence, ok=False)
 
+    def test_named_infrastructure_checkout_is_the_only_allowed_untracked_tree(self):
+        spine = self.repo / ".ci-templates"
+        spine.mkdir()
+        (spine / "spine.sh").write_text("#!/bin/sh\n")
+        self.run_cli("capture", "--repo", self.repo, "--artifact", self.artifact,
+                     "--output", self.evidence, ok=False)
+        self.run_cli("capture", "--repo", self.repo, "--artifact", self.artifact,
+                     "--output", self.evidence, "--allow-untracked", ".ci-templates")
+        (self.repo / "unexpected.txt").write_text("not infrastructure\n")
+        self.run_cli("verify", "--repo", self.repo, "--artifact", self.artifact,
+                     "--evidence", self.evidence, "--allow-untracked", ".ci-templates", ok=False)
+
 
 if __name__ == "__main__": unittest.main(verbosity=2)
