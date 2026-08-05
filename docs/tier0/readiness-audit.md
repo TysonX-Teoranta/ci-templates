@@ -13,9 +13,10 @@ Execution host: `tysonx-dev`, reached through `tysonx-pulse`
 | `TysonX-Teoranta/ci-templates` | `main` | `3852425b9bd42527b9827075eb6ccadb4858f89e` | `e3d2b650b857f0b17a8c1136777823e10938294b` | Clean, matches `origin/main` |
 | `TysonX-Teoranta/lodgers` | `lodgers-dev` | `4529670d150e6d54d22ec4d50e9413b4ddcc9e35` | `b08fc4d43eced18753cdc7436c86213049fd033a` | Clean, matches `origin/lodgers-dev` |
 
-Legacy working copies under `/home/deploy/repo` are not implementation bases: they are stale and/or contain
-unrelated changes. Tier 0 work uses clean isolated checkouts under `/home/deploy/work`; no legacy checkout is
-reset, cleaned, or overwritten.
+`/home/deploy/repo/lodgers-ai` is the existing Lodgers object/reference base and remains the deployment base.
+Exact-SHA deployment borrows its Git objects into an isolated `/tmp` clone; it does not create another
+`/home/deploy/repo/*` tree and does not reset, clean, or overwrite the existing base. Development validation uses
+clean checkouts under `/home/deploy/work`.
 
 ## Permissions and infrastructure
 
@@ -45,3 +46,16 @@ labels. Primary promotion is restricted to non-destructive canaries after the re
 - Not yet ready: destructive watchdog acceptance or primary installation. No disposable runner has been
   identified or proven credential-free.
 - Enforcement remains disabled until every Tier 0 acceptance scenario has evidence.
+
+## Readiness update — 2026-08-05
+
+- The destructive watchdog battery passed three repetitions on disposable GitHub-hosted
+  `ubuntu-24.04-arm` capacity matching 4 CPU, 15 GiB, ARM64, systemd, and SDK 10.0.110. The disposable runner had
+  no deployment credentials or normal self-hosted labels. Exact watchdog commit: `10576d0`.
+- The proven watchdog was installed on the primary through a root-owned, least-privilege entrypoint and sudoers
+  rule. A non-destructive runner-owned canary passed and left no scope or descendant behind.
+- No destructive watchdog scenario ran on `tysonx-dev`.
+- The ordinary primary runner coverage proof remains a required promotion checkpoint and must be recorded before
+  blocking watchdog enforcement is selected by the Lodgers caller.
+- TOTP gate installation remains an operator action under the existing Pulse root-boundary policy. The reviewed
+  root installation payload reuses the existing seed; automation has not replaced or exposed it.
