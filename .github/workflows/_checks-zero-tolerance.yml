@@ -249,8 +249,10 @@ jobs:
           # MUST scope instrumentation to the product assemblies via --include:
           # instrumenting the whole output dir rewrites every dependency and times
           # out (30-min cancel). One --include [<AssemblyName>]* per non-test proj.
-          dotnet tool install --global coverlet.console
+          dotnet tool install --global coverlet.console --version 10.0.1 \
+            || dotnet tool update --global coverlet.console --version 10.0.1
           export PATH="$PATH:$HOME/.dotnet/tools"
+          coverlet --version | grep -q '^10\.0\.1'
           mkdir -p ./coverage
           dotnet build "${{ inputs.test_project }}" -c Debug
           TEST_BIN="$(dirname "${{ inputs.test_project }}")/bin/Debug"
@@ -264,7 +266,8 @@ jobs:
           while IFS= read -r name; do
             [ -n "$name" ] && INCLUDES+=(--include "[$name]*")
           done < <(find . -name '*.csproj' -not -path '*/bin/*' -not -path '*/obj/*' \
-            | grep -viE '/[^/]*tests?\.csproj$' \
+            -not -path './.ci-templates/*' -not -path './audit-harness/*' \
+            | grep -viE '/[^/]*(tests?|playwright)\.csproj$' \
             | while IFS= read -r proj; do
                 name="$(sed -n 's:.*<AssemblyName>[[:space:]]*\([^<]*[^<[:space:]]\)[[:space:]]*</AssemblyName>.*:\1:p' "$proj" | head -1)"
                 echo "${name:-$(basename "$proj" .csproj)}"
@@ -304,15 +307,16 @@ jobs:
             if [ "${{ inputs.tier0_watchdog }}" = true ]; then
               run_watchdog() {
                 local evidence="$RUNNER_TEMP/tier0-watchdog-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$1"
-                local coverlet_bin
+                local coverlet_bin watchdog_tdir
                 coverlet_bin=$(command -v coverlet)
+                watchdog_tdir=$(realpath "$TDIR")
                 flock -w 1800 /home/deploy/repo/lodgers-ai/.build-lock \
                   sudo -n /usr/local/sbin/tier0-test-watchdog "$evidence" -- \
                     "$GITHUB_WORKSPACE/.ci-templates/cicd/watchdog/coverage-command.sh" \
                     "$evidence" "$GITHUB_WORKSPACE/coverage/coverage.cobertura.xml" -- \
-                    "$coverlet_bin" "$TDIR" --target /usr/bin/dotnet \
-                    --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 25m --blame-hang-dump-type mini" \
-                    --format cobertura --output ./coverage/ "${INCLUDES[@]}"
+                    "$coverlet_bin" "$watchdog_tdir" --target /usr/bin/dotnet \
+                    --targetargs "test $GITHUB_WORKSPACE/${{ inputs.test_project }} --no-build --blame-hang-timeout 25m --blame-hang-dump-type mini" \
+                    --format cobertura --output "$GITHUB_WORKSPACE/coverage/" "${INCLUDES[@]}"
               }
               set +e
               run_watchdog 1 2>&1 | tee "$RUNNER_TEMP/test-report.txt"
