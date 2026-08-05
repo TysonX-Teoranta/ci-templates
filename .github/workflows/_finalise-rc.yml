@@ -38,6 +38,11 @@ on:
         required: false
         type: string
         default: tysonx-pulse
+      spine_ref:
+        description: "ci-templates ref used for an acceptance run; production callers use main"
+        required: false
+        type: string
+        default: main
 
 jobs:
   authorize:
@@ -60,11 +65,44 @@ jobs:
             --authorization-id "$AUTHORIZATION_ID" --domain "$DOMAIN" --actor "$ACTOR")
           printf 'lifecycle_id=%s\n' "$lifecycle_id" >> "$GITHUB_OUTPUT"
 
-  finalise:
-    name: Finalise RC (scrub + hygiene + build-once artifact)
+  migration:
+    name: Classify and validate exact-source PostgreSQL migrations
     needs: authorize
     runs-on: [self-hosted, "${{ inputs.runner_label }}"]
-    timeout-minutes: 60
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact product source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - name: Checkout ci-templates spine
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: TysonX-Teoranta/ci-templates
+          ref: ${{ inputs.spine_ref }}
+          path: .ci-templates
+      - name: Structured migration classification and PostgreSQL proof
+        env:
+          TIER0_MIGRATION_EVIDENCE_DIR: ${{ runner.temp }}/tier0-migration-${{ github.run_id }}
+        run: |
+          chmod +x .ci-templates/cicd/migrations/*.sh .ci-templates/cicd/migrations/*.py
+          .ci-templates/cicd/migrations/migration-gate.sh
+      - name: Upload migration evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: migration-evidence-${{ inputs.domain }}
+          path: ${{ runner.temp }}/tier0-migration-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+
+  finalise:
+    name: Finalise RC (scrub + hygiene + build-once artifact)
+    needs: [authorize, migration]
+    runs-on: [self-hosted, "${{ inputs.runner_label }}"]
+    timeout-minutes: 345
     permissions:
       contents: write   # RC tag push + prerelease create
     outputs:
@@ -85,7 +123,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: TysonX-Teoranta/ci-templates
-          ref: main
+          ref: ${{ inputs.spine_ref }}
           path: .ci-templates
 
       - name: Cut RC (rc-finalise.sh — fat spine)
@@ -189,7 +227,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: TysonX-Teoranta/ci-templates
-          ref: main
+          ref: ${{ inputs.spine_ref }}
           path: .ci-templates
       - name: Bounded refusal loop + single-shot escalation (rc-loop-guard.sh — fat spine)
         env:
