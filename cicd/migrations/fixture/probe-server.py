@@ -26,7 +26,10 @@ SELECT count(*) FROM \"__EFMigrationsHistory\";
 SELECT to_regclass('pg_temp.tier0_health_probe') IS NULL;
 """
     result = subprocess.run(
-        ["docker", "exec", containers[0], "psql", "-At", "-v", "ON_ERROR_STOP=1", "-U", "tier0", "-d", "tier0"],
+        [
+            "docker", "exec", "-i", containers[0], "psql", "-At", "-v",
+            "ON_ERROR_STOP=1", "-U", "tier0", "-d", "tier0",
+        ],
         input=sql,
         check=True,
         capture_output=True,
