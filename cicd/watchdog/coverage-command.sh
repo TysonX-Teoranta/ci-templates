@@ -21,6 +21,7 @@ export TIER0_HEARTBEAT_FILE="$HEARTBEAT"
 COMMAND_PID=$!
 SEEN_TESTHOST=0
 LAST_PHASE=coverage
+LAST_COVERLET_TICKS=0
 while kill -0 "$COMMAND_PID" 2>/dev/null; do
   if python3 - "$COMMAND_PID" <<'PY'
 import os, sys
@@ -54,6 +55,17 @@ PY
     printf 'coverage\n' > "$PHASE"
     date +%s > "$HEARTBEAT"
     LAST_PHASE="coverage"
+  fi
+  # Coverlet exposes no structured callback while calculating its final report.
+  # Its own accumulated user/system CPU ticks are the phase's explicit progress
+  # signal: a sleeping/stuck collector stops advancing them, while valid IL and
+  # XML calculation continues to advance them even with completely quiet output.
+  if [ "$LAST_PHASE" = coverage ] && [ -r "/proc/$COMMAND_PID/stat" ]; then
+    COVERLET_TICKS=$(awk '{print $14 + $15}' "/proc/$COMMAND_PID/stat" 2>/dev/null || printf '0')
+    if [ "$COVERLET_TICKS" -gt "$LAST_COVERLET_TICKS" ]; then
+      date +%s > "$HEARTBEAT"
+      LAST_COVERLET_TICKS=$COVERLET_TICKS
+    fi
   fi
   sleep 2
 done
