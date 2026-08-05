@@ -249,16 +249,16 @@ jobs:
           # product assemblies = this repo's non-test projects' OUTPUT names
           # (<AssemblyName> when set — tysonx: TysonxSite.csproj -> tysonx-site —
           # else the csproj basename). One coverlet --include filter per assembly.
-          INCLUDES=""
+          INCLUDES=()
           while IFS= read -r name; do
-            [ -n "$name" ] && INCLUDES="$INCLUDES --include [$name]*"
+            [ -n "$name" ] && INCLUDES+=(--include "[$name]*")
           done < <(find . -name '*.csproj' -not -path '*/bin/*' -not -path '*/obj/*' \
             | grep -viE '/[^/]*tests?\.csproj$' \
             | while IFS= read -r proj; do
                 name="$(sed -n 's:.*<AssemblyName>[[:space:]]*\([^<]*[^<[:space:]]\)[[:space:]]*</AssemblyName>.*:\1:p' "$proj" | head -1)"
                 echo "${name:-$(basename "$proj" .csproj)}"
               done)
-          echo "coverlet product includes:$INCLUDES"
+          printf 'coverlet product include: %s\n' "${INCLUDES[@]}"
           SLICES="${{ inputs.test_slices }}"
           case "${{ inputs.test_project }}" in
             *.sln|*.slnx)
@@ -281,7 +281,7 @@ jobs:
                 coverlet "$TD" --target dotnet \
                   --targetargs "test $tproj --no-build --blame-hang-timeout 25m --blame-hang-dump-type mini" \
                   --format json --format cobertura --output ./coverage/ \
-                  $MERGE $INCLUDES 2>&1 | tee -a "$RUNNER_TEMP/test-report.txt"
+                  $MERGE "${INCLUDES[@]}" 2>&1 | tee -a "$RUNNER_TEMP/test-report.txt"
                 test "${PIPESTATUS[0]}" -eq 0
                 FIRST=0
               done < <(find . -name '*.csproj' -not -path '*/bin/*' -not -path '*/obj/*' \
@@ -298,7 +298,7 @@ jobs:
                   "$evidence" "$GITHUB_WORKSPACE/coverage/coverage.cobertura.xml" -- \
                   coverlet "$TDIR" --target dotnet \
                     --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 25m --blame-hang-dump-type mini" \
-                    --format cobertura --output ./coverage/ $INCLUDES
+                    --format cobertura --output ./coverage/ "${INCLUDES[@]}"
               }
               set +e
               run_watchdog 1 2>&1 | tee "$RUNNER_TEMP/test-report.txt"
@@ -317,7 +317,7 @@ jobs:
               coverlet "$TDIR" --target dotnet \
                 --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 25m --blame-hang-dump-type mini" \
                 --format cobertura --output ./coverage/ \
-                $INCLUDES 2>&1 | tee "$RUNNER_TEMP/test-report.txt"
+                "${INCLUDES[@]}" 2>&1 | tee "$RUNNER_TEMP/test-report.txt"
               test "${PIPESTATUS[0]}" -eq 0
             fi
           else
@@ -371,7 +371,7 @@ jobs:
               coverlet "$TDIR" --target dotnet \
                 --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 25m --blame-hang-dump-type mini --filter \"$FILTER\"" \
                 $FORMATS --output ./coverage/ \
-                $MERGE $INCLUDES 2>&1 | tee -a "$RUNNER_TEMP/test-report.txt"
+                $MERGE "${INCLUDES[@]}" 2>&1 | tee -a "$RUNNER_TEMP/test-report.txt"
               test "${PIPESTATUS[0]}" -eq 0
             done < ./coverage/slices.txt
           fi
