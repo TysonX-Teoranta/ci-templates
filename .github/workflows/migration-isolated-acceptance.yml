@@ -16,6 +16,58 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  generation-failure:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - name: Checkout candidate spine
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Prove migration-script generation fails closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/generation-failure"
+          mkdir -p "$root/declarations" "$root/evidence"
+          source_sha=$(git rev-parse HEAD)
+          jq -n --arg source "$source_sha" '{
+            sourceSha:$source, previousMigration:"", populatedBaselineEstablished:true,
+            dbProject:"cicd/migrations/fixture/Tier0.MigrationFixture.csproj",
+            startupProject:"cicd/migrations/fixture/Tier0.MigrationFixture.csproj",
+            migrationAssembly:"cicd/migrations/fixture/bin/Release/net10.0/Tier0.MigrationFixture.dll",
+            dbContext:"", postgresImage:"postgres:18.0-bookworm@sha256:3f55f8895c4ed50603e2fbdfc72fffeeaba3173321fee5cb825bbbeb30d9d854",
+            fixtureCommand:"false", appBootCommand:"false", appProbeUrl:"http://127.0.0.1/never"
+          }' > "$root/config.json"
+          for declaration in \
+            '20260101000000_CreateAndNullable:pure-additive:NewTable' \
+            '20260102000000_RiskyKnown:data-sensitive:Existing' \
+            '20260103000000_UnknownDefaultsRisky:data-sensitive:Existing'; do
+            IFS=: read -r migration classification table <<< "$declaration"
+            jq -n --arg migration "$migration" --arg classification "$classification" --arg table "$table" \
+              '{migration:$migration,classification:$classification,affected_tables:[$table],
+                expected:{rows_preserved:true,relationships_preserved:true,backfills:[]}}' \
+              > "$root/declarations/$migration.json"
+          done
+          set +e
+          TIER0_MIGRATION_CONFIG="$root/config.json" \
+          TIER0_MIGRATION_DECLARATIONS="$root/declarations" \
+          TIER0_MIGRATION_EVIDENCE_DIR="$root/evidence" \
+            ./cicd/migrations/migration-gate.sh > "$root/gate.log" 2>&1
+          status=$?
+          set -e
+          test "$status" -ne 0
+          test ! -f "$root/evidence/evidence.json"
+          grep -Eq 'No DbContext|Unable to create|migrations script' "$root/gate.log"
+
+      - name: Retain generation-failure evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: migration-generation-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/generation-failure/**
+          if-no-files-found: error
+          retention-days: 30
+
   postgres-battery:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45

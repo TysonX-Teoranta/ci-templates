@@ -54,5 +54,14 @@ jq -e '.outcome == "PASSED_POPULATED_UPGRADE" and (.affectedTables | length) == 
   .databaseHealth.appliedMigrationCount == 2 and .databaseHealth.rolledBack == true' \
   "$EVIDENCE/risky-evidence.json" >/dev/null
 
+# A populated route can never fall back to the additive path when fixture
+# generation fails. It must stop before candidate application and clean Docker.
+export TIER0_FIXTURE_COMMAND=false
+if GITHUB_RUN_ID=$((${GITHUB_RUN_ID:-1001} + 2)) "$ROOT/postgres-validation.sh" \
+  --route "$EVIDENCE/risky-route.json" --candidate-script "$EVIDENCE/risky.sql" \
+  --baseline-script "$EVIDENCE/baseline.sql" --evidence "$EVIDENCE/fixture-failure-evidence.json"; then
+  echo "fixture-generation failure unexpectedly passed" >&2
+  exit 1
+fi
 test -z "$(docker ps -aq --filter label=tier0.disposable=true)"
 printf 'disposable PostgreSQL additive and populated acceptance passed\n'
