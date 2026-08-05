@@ -1,0 +1,94 @@
+name: Watchdog isolated acceptance
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/watchdog-isolated-acceptance.yml'
+      - 'cicd/lib/test-watchdog.sh'
+      - 'cicd/watchdog/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: watchdog-isolated-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  destructive-battery:
+    # GitHub provisions a fresh ARM64 VM for this public repository. This label
+    # must never be replaced with a self-hosted or normal fleet label.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    env:
+      TIER0_DISPOSABLE_RUNNER: '1'
+      PRIMARY_RUNNER: '0'
+      DEPLOYMENT_CREDENTIALS_PRESENT: '0'
+      RUNNER_LABELS: 'github-hosted,tier0-disposable,ubuntu-24.04-arm'
+    steps:
+      - name: Checkout candidate spine
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install production SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: cicd/watchdog/global.json
+
+      - name: Prove disposable environment and parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/watchdog-preflight"
+          SYSTEM_STATE=$(systemctl is-system-running 2>/dev/null || true)
+          sudo systemd-run --unit="tier0-preflight-$GITHUB_RUN_ID" --collect \
+            --wait --quiet /usr/bin/true
+          {
+            echo "arch=$RUNNER_ARCH"
+            echo "os=$(. /etc/os-release; echo "$VERSION_ID")"
+            echo "sdk=$(cd cicd/watchdog && dotnet --version)"
+            echo "cpus=$(nproc)"
+            echo "memory_gib=$(awk '/MemTotal/ {print int($2 / 1024 / 1024)}' /proc/meminfo)"
+            echo "systemd_state=$SYSTEM_STATE"
+            echo "systemd_transient_unit=passed"
+          } | tee "$RUNNER_TEMP/watchdog-preflight/parity.txt"
+          test "$RUNNER_ARCH" = ARM64
+          test "$(. /etc/os-release; echo "$VERSION_ID")" = 24.04
+          test "$(cd cicd/watchdog && dotnet --version)" = 10.0.110
+          test "$(nproc)" -eq 4
+          test "$(awk '/MemTotal/ {print int($2 / 1024 / 1024)}' /proc/meminfo)" -ge 14
+          test -z "${SSH_AUTH_SOCK:-}"
+          test ! -d "$HOME/.ssh" || test -z "$(find "$HOME/.ssh" -type f \
+            \( -name 'id_*' -o -name '*.pem' -o -name '*.key' -o -name '*.p12' -o -name '*.pfx' \) \
+            -print -quit)"
+
+      - name: Restore and build matching testhost and Coverlet fixture
+        working-directory: cicd/watchdog
+        run: |
+          dotnet restore fixture/Tier0.Watchdog.Fixture.csproj
+          dotnet build fixture/Tier0.Watchdog.Fixture.csproj -c Release --no-restore
+          dotnet list fixture/Tier0.Watchdog.Fixture.csproj package > "$RUNNER_TEMP/watchdog-preflight/packages.txt"
+          grep -Eq 'coverlet.collector +10\.0\.1 +10\.0\.1' "$RUNNER_TEMP/watchdog-preflight/packages.txt"
+          grep -Eq 'Microsoft.NET.Test.Sdk +18\.6\.0 +18\.6\.0' "$RUNNER_TEMP/watchdog-preflight/packages.txt"
+          grep -Eq 'NUnit +4\.6\.1 +4\.6\.1' "$RUNNER_TEMP/watchdog-preflight/packages.txt"
+          grep -Eq 'NUnit3TestAdapter +6\.2\.0 +6\.2\.0' "$RUNNER_TEMP/watchdog-preflight/packages.txt"
+
+      - name: Run destructive battery three times
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            sudo --preserve-env=TIER0_DISPOSABLE_RUNNER,PRIMARY_RUNNER,DEPLOYMENT_CREDENTIALS_PRESENT,RUNNER_LABELS,TIER0_ACCEPTANCE_ROOT \
+              env TIER0_ACCEPTANCE_ROOT="$RUNNER_TEMP/watchdog-$attempt" \
+              ./cicd/watchdog/isolated-acceptance.sh
+          done
+
+      - name: Retain watchdog diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: watchdog-isolated-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/watchdog-*/**
+          if-no-files-found: error
+          retention-days: 30

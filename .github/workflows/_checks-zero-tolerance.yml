@@ -80,6 +80,16 @@ on:
         required: false
         type: boolean
         default: false
+      tier0_watchdog:
+        description: "run the single-project coverage command inside the proven primary-runner watchdog"
+        required: false
+        type: boolean
+        default: false
+      spine_ref:
+        description: "ci-templates ref used for an acceptance run; production callers use main"
+        required: false
+        type: string
+        default: main
 
 # Serialize the gate on the shared dev box. All zero-tolerance runs execute on the
 # TWO self-hosted tysonx-dev runners now serve this gate (dev cax31 + the caged
@@ -156,8 +166,21 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: TysonX-Teoranta/ci-templates
-          ref: main
+          ref: ${{ inputs.spine_ref }}
           path: .ci-templates
+
+      - name: Capture immutable source identity before verification
+        run: |
+          python3 .ci-templates/cicd/lib/source-evidence.py capture \
+            --repo "$GITHUB_WORKSPACE" \
+            --allow-untracked .ci-templates \
+            --output "$RUNNER_TEMP/tier0-source-evidence.json"
+
+      - name: Select the dev-server .NET build mutex
+        run: |
+          if [ -x /home/deploy/bin/dotnet ]; then
+            echo /home/deploy/bin >> "$GITHUB_PATH"
+          fi
 
       - name: Zero-tolerance code-quality gate (checks.sh — build + analyzers + comment-density)
         id: gate
@@ -169,6 +192,13 @@ jobs:
                 --scope "${{ inputs.scope }}" --base "origin/${{ github.base_ref }}")
           [ "${{ inputs.strict_density }}" = "true" ] && args+=(--strict-density)
           .ci-templates/cicd/checks.sh "${args[@]}"
+
+      - name: Verify source identity after code-quality gate
+        run: |
+          python3 .ci-templates/cicd/lib/source-evidence.py verify \
+            --repo "$GITHUB_WORKSPACE" \
+            --allow-untracked .ci-templates \
+            --evidence "$RUNNER_TEMP/tier0-source-evidence.json"
 
       - name: Test + coverage
         id: test
@@ -220,8 +250,10 @@ jobs:
           # MUST scope instrumentation to the product assemblies via --include:
           # instrumenting the whole output dir rewrites every dependency and times
           # out (30-min cancel). One --include [<AssemblyName>]* per non-test proj.
-          dotnet tool install --global coverlet.console
+          dotnet tool install --global coverlet.console --version 10.0.1 \
+            || dotnet tool update --global coverlet.console --version 10.0.1
           export PATH="$PATH:$HOME/.dotnet/tools"
+          coverlet --version | grep -q '^10\.0\.1'
           mkdir -p ./coverage
           dotnet build "${{ inputs.test_project }}" -c Debug
           TEST_BIN="$(dirname "${{ inputs.test_project }}")/bin/Debug"
@@ -231,16 +263,17 @@ jobs:
           # product assemblies = this repo's non-test projects' OUTPUT names
           # (<AssemblyName> when set — tysonx: TysonxSite.csproj -> tysonx-site —
           # else the csproj basename). One coverlet --include filter per assembly.
-          INCLUDES=""
+          INCLUDES=()
           while IFS= read -r name; do
-            [ -n "$name" ] && INCLUDES="$INCLUDES --include [$name]*"
+            [ -n "$name" ] && INCLUDES+=(--include "[$name]*")
           done < <(find . -name '*.csproj' -not -path '*/bin/*' -not -path '*/obj/*' \
-            | grep -viE '/[^/]*tests?\.csproj$' \
+            -not -path './.ci-templates/*' -not -path './audit-harness/*' \
+            | grep -viE '/[^/]*(tests?|playwright)\.csproj$' \
             | while IFS= read -r proj; do
                 name="$(sed -n 's:.*<AssemblyName>[[:space:]]*\([^<]*[^<[:space:]]\)[[:space:]]*</AssemblyName>.*:\1:p' "$proj" | head -1)"
                 echo "${name:-$(basename "$proj" .csproj)}"
               done)
-          echo "coverlet product includes:$INCLUDES"
+          printf 'coverlet product include: %s\n' "${INCLUDES[@]}"
           SLICES="${{ inputs.test_slices }}"
           case "${{ inputs.test_project }}" in
             *.sln|*.slnx)
@@ -250,7 +283,7 @@ jobs:
               # (2026-07-26) until this branch. Instrument each test project's own
               # output dir and accumulate through coverlet's json merge; the final
               # project also emits cobertura so downstream sees one whole-suite report.
-              : > test-report.txt
+              : > "$RUNNER_TEMP/test-report.txt"
               FIRST=1
               while IFS= read -r tproj; do
                 TB="$(dirname "$tproj")/bin/Debug"
@@ -263,7 +296,7 @@ jobs:
                 coverlet "$TD" --target dotnet \
                   --targetargs "test $tproj --no-build --blame-hang-timeout 25m --blame-hang-dump-type mini" \
                   --format json --format cobertura --output ./coverage/ \
-                  $MERGE $INCLUDES 2>&1 | tee -a test-report.txt
+                  $MERGE "${INCLUDES[@]}" 2>&1 | tee -a "$RUNNER_TEMP/test-report.txt"
                 test "${PIPESTATUS[0]}" -eq 0
                 FIRST=0
               done < <(find . -name '*.csproj' -not -path '*/bin/*' -not -path '*/obj/*' \
@@ -272,12 +305,40 @@ jobs:
               ;;
             *)
           if [ "${SLICES:-1}" -le 1 ]; then
-            # shellcheck disable=SC2086
-            coverlet "$TDIR" --target dotnet \
-              --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 25m --blame-hang-dump-type mini" \
-              --format cobertura --output ./coverage/ \
-              $INCLUDES 2>&1 | tee test-report.txt
-            test "${PIPESTATUS[0]}" -eq 0
+            if [ "${{ inputs.tier0_watchdog }}" = true ]; then
+              run_watchdog() {
+                local evidence="$RUNNER_TEMP/tier0-watchdog-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$1"
+                local coverlet_bin watchdog_tdir
+                coverlet_bin=$(command -v coverlet)
+                watchdog_tdir=$(realpath "$TDIR")
+                flock -w 1800 /home/deploy/repo/lodgers-ai/.build-lock \
+                  sudo -n /usr/local/sbin/tier0-test-watchdog "$evidence" -- \
+                    "$GITHUB_WORKSPACE/.ci-templates/cicd/watchdog/coverage-command.sh" \
+                    "$evidence" "$GITHUB_WORKSPACE/coverage/coverage.cobertura.xml" -- \
+                    "$coverlet_bin" "$watchdog_tdir" --target /usr/bin/dotnet \
+                    --targetargs "test $GITHUB_WORKSPACE/${{ inputs.test_project }} --no-build --blame-hang-timeout 25m --blame-hang-dump-type mini" \
+                    --format cobertura --output "$GITHUB_WORKSPACE/coverage/" "${INCLUDES[@]}"
+              }
+              set +e
+              run_watchdog 1 2>&1 | tee "$RUNNER_TEMP/test-report.txt"
+              WATCHDOG_STATUS=${PIPESTATUS[0]}
+              set -e
+              if [ "$WATCHDOG_STATUS" -eq 75 ]; then
+                echo "watchdog classified infrastructure failure; starting sole retry" | tee -a "$RUNNER_TEMP/test-report.txt"
+                set +e
+                run_watchdog 2 2>&1 | tee -a "$RUNNER_TEMP/test-report.txt"
+                WATCHDOG_STATUS=${PIPESTATUS[0]}
+                set -e
+              fi
+              test "$WATCHDOG_STATUS" -eq 0
+            else
+              # shellcheck disable=SC2086
+              coverlet "$TDIR" --target dotnet \
+                --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 25m --blame-hang-dump-type mini" \
+                --format cobertura --output ./coverage/ \
+                "${INCLUDES[@]}" 2>&1 | tee "$RUNNER_TEMP/test-report.txt"
+              test "${PIPESTATUS[0]}" -eq 0
+            fi
           else
             # SLICED RUN: the whole suite in one testhost peaks too high for the
             # smaller self-hosted boxes (OOM at any cgroup ceiling below ~10G).
@@ -314,9 +375,10 @@ jobs:
                       fh.write('|'.join(f"FullyQualifiedName~{x}." for x in b) + "\n")
           print(f"slice discovery: {len(ns)} namespaces -> {sum(1 for b in buckets if b)} slices")
           PY
+
             SLICE_NO=0
             TOTAL_SLICES=$(wc -l < ./coverage/slices.txt)
-            : > test-report.txt
+            : > "$RUNNER_TEMP/test-report.txt"
             while IFS= read -r FILTER; do
               SLICE_NO=$((SLICE_NO + 1))
               MERGE=""
@@ -328,7 +390,7 @@ jobs:
               coverlet "$TDIR" --target dotnet \
                 --targetargs "test ${{ inputs.test_project }} --no-build --blame-hang-timeout 25m --blame-hang-dump-type mini --filter \"$FILTER\"" \
                 $FORMATS --output ./coverage/ \
-                $MERGE $INCLUDES 2>&1 | tee -a test-report.txt
+                $MERGE "${INCLUDES[@]}" 2>&1 | tee -a "$RUNNER_TEMP/test-report.txt"
               test "${PIPESTATUS[0]}" -eq 0
             done < ./coverage/slices.txt
           fi
@@ -343,6 +405,22 @@ jobs:
               print("::error::coverage report is EMPTY — instrumentation collected nothing")
               sys.exit(1)
           PY
+
+      - name: Bind coverage evidence to the immutable source
+        if: inputs.test_project != ''
+        run: |
+          COBERTURA=$(find "$GITHUB_WORKSPACE/coverage" -name coverage.cobertura.xml -type f -print -quit)
+          test -n "$COBERTURA"
+          python3 .ci-templates/cicd/lib/source-evidence.py capture \
+            --repo "$GITHUB_WORKSPACE" \
+            --allow-untracked .ci-templates \
+            --artifact "$COBERTURA" \
+            --output "$RUNNER_TEMP/tier0-source-evidence.json"
+          python3 .ci-templates/cicd/lib/source-evidence.py verify \
+            --repo "$GITHUB_WORKSPACE" \
+            --allow-untracked .ci-templates \
+            --artifact "$COBERTURA" \
+            --evidence "$RUNNER_TEMP/tier0-source-evidence.json"
 
       - name: Restart LibreTranslate sidecar (if we stopped it)
         if: always()
@@ -430,13 +508,22 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      - name: Upload exact-source evidence
+        if: inputs.test_project != '' && always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: source-evidence-${{ inputs.domain }}
+          path: ${{ runner.temp }}/tier0-source-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Attach failure report
         if: failure()
         run: |
           echo "## Zero-tolerance gate failed" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           { tail -100 .ci-templates/cicd/reports/findings.txt 2>/dev/null || true; \
-            tail -100 test-report.txt 2>/dev/null || true; } >> "$GITHUB_STEP_SUMMARY"
+            tail -100 "$RUNNER_TEMP/test-report.txt" 2>/dev/null || true; } >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Retry-tracker — record result, elevate at limit

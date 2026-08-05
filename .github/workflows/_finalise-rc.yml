@@ -14,6 +14,10 @@ on:
         description: "domains.yml key (must be status: active)"
         required: true
         type: string
+      authorization_id:
+        description: "Opaque, short-lived authorization ID issued by the trusted TOTP gateway"
+        required: true
+        type: string
       bump:
         description: "rc | patch | minor | major"
         required: false
@@ -28,18 +32,55 @@ on:
         description: "build runner label (the domain's dev box)"
         required: false
         type: string
-        default: tysonx-dev
+        default: tysonx-dev-heavy
       pulse_runner_label:
         description: "pulse runner label (mail stack lives there)"
         required: false
         type: string
         default: tysonx-pulse
+      spine_ref:
+        description: "ci-templates ref used for an acceptance run; production callers use main"
+        required: false
+        type: string
+        default: main
 
 jobs:
+  authorize:
+    name: Claim TOTP authorization and singleton lifecycle
+    runs-on: [self-hosted, "${{ inputs.pulse_runner_label }}"]
+    timeout-minutes: 2
+    outputs:
+      lifecycle_id: ${{ steps.claim.outputs.lifecycle_id }}
+    steps:
+      # This installed, root-owned boundary runs before either product or spine
+      # checkout. A direct workflow dispatch therefore fails without touching source.
+      - name: Atomically claim authorization and Lodgers lifecycle
+        id: claim
+        env:
+          AUTHORIZATION_ID: ${{ inputs.authorization_id }}
+          DOMAIN: ${{ inputs.domain }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          lifecycle_id=$(sudo -n /usr/local/sbin/tier0-rc-authorization claim \
+            --authorization-id="$AUTHORIZATION_ID" --domain "$DOMAIN" --actor "$ACTOR")
+          if ! sudo -n /usr/local/sbin/tier0-rc-authorization supervise-start \
+            "$lifecycle_id" "$ACTOR" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"; then
+            sudo -n /usr/local/sbin/tier0-rc-authorization lifecycle fail \
+              --lifecycle-id "$lifecycle_id" --actor "$ACTOR"
+            exit 1
+          fi
+          printf 'lifecycle_id=%s\n' "$lifecycle_id" >> "$GITHUB_OUTPUT"
+
   finalise:
     name: Finalise RC (scrub + hygiene + build-once artifact)
+    needs: authorize
     runs-on: [self-hosted, "${{ inputs.runner_label }}"]
-    timeout-minutes: 60
+    timeout-minutes: 345
+    env:
+      # The runner also has a user-local preview SDK. Pin host resolution to the
+      # production SDK that satisfies the product's global.json.
+      DOTNET_ROOT: /usr/lib/dotnet
+      DOTNET_MULTILEVEL_LOOKUP: 0
     permissions:
       contents: write   # RC tag push + prerelease create
     outputs:
@@ -60,8 +101,38 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: TysonX-Teoranta/ci-templates
-          ref: main
+          ref: ${{ inputs.spine_ref }}
           path: .ci-templates
+
+      - name: Select the dev-server .NET build mutex
+        run: |
+          if [ -x /home/deploy/bin/dotnet ]; then
+            echo /home/deploy/bin >> "$GITHUB_PATH"
+          fi
+
+      - name: Structured migration classification and PostgreSQL proof
+        timeout-minutes: 45
+        env:
+          TIER0_MIGRATION_EVIDENCE_DIR: ${{ runner.temp }}/tier0-migration-${{ github.run_id }}
+          TIER0_DOTNET: /usr/bin/dotnet
+        run: |
+          mkdir -p "$TIER0_MIGRATION_EVIDENCE_DIR"
+          "$TIER0_DOTNET" --list-sdks | \
+            tee "$TIER0_MIGRATION_EVIDENCE_DIR/sdk.txt" | \
+            grep -F '10.0.110 [/usr/lib/dotnet/sdk]'
+          chmod +x .ci-templates/cicd/migrations/*.sh .ci-templates/cicd/migrations/*.py
+          flock -w 2700 /home/deploy/repo/lodgers-ai/.build-lock \
+            .ci-templates/cicd/migrations/migration-gate.sh \
+            2>&1 | tee "$TIER0_MIGRATION_EVIDENCE_DIR/gate.log"
+
+      - name: Upload migration evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: migration-evidence-${{ inputs.domain }}
+          path: ${{ runner.temp }}/tier0-migration-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Cut RC (rc-finalise.sh — fat spine)
         id: cut
@@ -75,6 +146,14 @@ jobs:
         run: |
           chmod +x .ci-templates/cicd/rc/rc-finalise.sh .ci-templates/cicd/lib/*.sh
           CICD_REGISTRY=.ci-templates/domains.yml .ci-templates/cicd/rc/rc-finalise.sh
+
+      - name: Upload exact-source evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rc-source-evidence-${{ inputs.domain }}
+          path: ${{ runner.temp }}/tier0-rc-source-evidence-${{ github.run_id }}.json
+          if-no-files-found: error
+          retention-days: 30
 
   notify:
     name: RC finalised notice (essential mail + close the refusal loop)
@@ -133,7 +212,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: TysonX-Teoranta/ci-templates
-          ref: main
+          ref: ${{ inputs.spine_ref }}
           path: .ci-templates
       - name: Bounded refusal loop + single-shot escalation (rc-loop-guard.sh — fat spine)
         env:

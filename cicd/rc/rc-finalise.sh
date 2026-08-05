@@ -61,6 +61,7 @@ fi
 
 # --- Branch guard: RCs finalise from the dev branch head, nothing else --------
 HEAD_SHA="$(git rev-parse HEAD)"
+DEV_TREE_SHA="$(git rev-parse 'HEAD^{tree}')"
 DEV_SHA="$(git rev-parse "origin/$DEV_BRANCH" 2>/dev/null || true)"
 [ -n "$DEV_SHA" ] || die "cannot resolve origin/$DEV_BRANCH — need a full-history checkout" 3
 [ "$HEAD_SHA" = "$DEV_SHA" ] || die "HEAD ($HEAD_SHA) is not origin/$DEV_BRANCH head ($DEV_SHA) — refuse to cut" 2
@@ -121,6 +122,11 @@ else
   RC_COMMIT_SHA="$(git rev-parse HEAD)"
   log "scrub committed on $RC_BRANCH: $RC_COMMIT_SHA (parent $HEAD_SHA)"
 fi
+RC_TREE_SHA="$(git rev-parse 'HEAD^{tree}')"
+SOURCE_EVIDENCE="${RUNNER_TEMP:-/tmp}/tier0-rc-source-evidence-${GITHUB_RUN_ID:-$$}.json"
+python3 "$CICD_ROOT/lib/source-evidence.py" capture \
+  --repo "$WORKROOT" --allow-untracked .ci-templates --output "$SOURCE_EVIDENCE" \
+  || die "cannot capture immutable RC source identity" 1
 run_hygiene source
 
 # --- Central gate: secret scan over the source tree (zero-AI gitleaks) ----------
@@ -154,6 +160,9 @@ if [ -n "$TEST_PROJECT" ]; then
 else
   warn "no test_project for $DOMAIN — tests skipped at cut (gated per-PR only)"
 fi
+python3 "$CICD_ROOT/lib/source-evidence.py" verify \
+  --repo "$WORKROOT" --allow-untracked .ci-templates --evidence "$SOURCE_EVIDENCE" \
+  || die "RC source identity changed during build/test" 1
 
 PUBLISH_DIR="$WORKROOT/rc-publish-out"
 rm -rf "$PUBLISH_DIR"
@@ -250,20 +259,39 @@ SBOM_FILE="$STAGE_DIR/$SBOM" RC_LICENSE_ALLOW="$LIC_ALLOW" bash "$GATES_DIR/rc-g
 jq -n \
   --arg domain "$DOMAIN" --arg tag "$TAG" --arg version "$VERSION" \
   --arg sha "$HEAD_SHA" --arg branch "$DEV_BRANCH" --arg rid "$RID" \
-  --arg rccommit "$RC_COMMIT_SHA" --arg rcbranch "$RC_BRANCH" \
+  --arg devtree "$DEV_TREE_SHA" --arg rccommit "$RC_COMMIT_SHA" \
+  --arg rctree "$RC_TREE_SHA" --arg rcbranch "$RC_BRANCH" \
   --arg built "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sdk "$DOTNET_SDK" \
   --arg artifact "$ARTIFACT" --arg asha "$ART_SHA" \
   --arg mig "$MIGSCRIPT" --arg migsha "$MIG_SHA" \
   --arg sbom "$SBOM" --arg sbomsha "$SBOM_SHA" \
-  '{schema: 2, domain: $domain, tag: $tag, version: $version,
-    dev_head_sha: $sha, rc_commit_sha: $rccommit, rc_branch: $rcbranch,
-    source_sha: $sha, source_branch: $branch, rid: $rid, built_utc: $built, dotnet_sdk: $sdk,
+  '{schema: 3, domain: $domain, tag: $tag, version: $version,
+    dev_head_sha: $sha, dev_tree_sha: $devtree,
+    rc_commit_sha: $rccommit, rc_tree_sha: $rctree, rc_branch: $rcbranch,
+    source_sha: $rccommit, source_tree_sha: $rctree, source_branch: $branch,
+    tested_source_sha: $rccommit, tested_tree_sha: $rctree,
+    artifact_provenance_source_sha: $rccommit,
+    migrations_provenance_source_sha: $rccommit,
+    rid: $rid, built_utc: $built, dotnet_sdk: $sdk,
     artifact: $artifact, artifact_sha256: $asha,
     migrations_script: $mig, migrations_sha256: $migsha,
     sbom: $sbom, sbom_sha256: $sbomsha,
     stubs: "none (zero-stub policy)", hygiene: "passed"}' > "$STAGE_DIR/manifest.json"
 ( cd "$STAGE_DIR" && sha256sum "$ARTIFACT" manifest.json ${MIGSCRIPT:+"$MIGSCRIPT"} ${SBOM:+"$SBOM"} > sha256sums.txt )
 log "artifact: $ARTIFACT ($ART_SHA)${MIGSCRIPT:+ + $MIGSCRIPT ($MIG_SHA)}"
+
+python3 "$CICD_ROOT/lib/source-evidence.py" capture \
+  --repo "$WORKROOT" --allow-untracked .ci-templates \
+  --allow-untracked rc-publish-out --allow-untracked rc-artifact \
+  --allow-untracked .eftool --allow-untracked .cdxtool \
+  --artifact "$STAGE_DIR/$ARTIFACT" --output "$SOURCE_EVIDENCE" \
+  || die "cannot bind RC artifact to immutable source" 1
+python3 "$CICD_ROOT/lib/source-evidence.py" verify \
+  --repo "$WORKROOT" --allow-untracked .ci-templates \
+  --allow-untracked rc-publish-out --allow-untracked rc-artifact \
+  --allow-untracked .eftool --allow-untracked .cdxtool \
+  --artifact "$STAGE_DIR/$ARTIFACT" --evidence "$SOURCE_EVIDENCE" \
+  || die "RC artifact provenance verification failed" 1
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
   { echo "rc_tag=$TAG"; echo "version=$VERSION"; echo "artifact=$ARTIFACT"; } >> "$GITHUB_OUTPUT"

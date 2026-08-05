@@ -3,9 +3,8 @@
 #   1. ratchet-bump — re-measure coverage on the domain's dev HEAD and raise the
 #      committed high-water baseline (never lowers it). The PR gate enforces
 #      "never drop below baseline"; this is the only thing that RAISES it.
-#   2. mutation — Stryker.NET mutation testing: proves the coverage is load-bearing
-#      (tests actually catch injected bugs), not just executed. Reports the score;
-#      never gates a PR. Runs here, never per-PR, so it cannot wedge the gate lane.
+# Mutation testing is deferred to Tier 2. It is not scheduled or executed here;
+# required PR capacity takes precedence over advisory analysis.
 #
 # Called by a domain's thin coverage-nightly.yml on a schedule. Runs on the shared
 # self-hosted dev runner; keep the schedules staggered across domains so two heavy
@@ -42,7 +41,7 @@ on:
 
 concurrency:
   group: coverage-nightly-tysonx-dev
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   ratchet-bump:
@@ -151,50 +150,3 @@ jobs:
           gh pr create --base "${{ inputs.dev_branch }}" --head "$BR" \
             --title "cicd(${{ inputs.domain }}): ratchet coverage baseline upward" \
             --body "Automated high-water bump from the nightly re-measure. Auto-merges on green."
-
-  # Ordered AFTER ratchet-bump, never beside it. Both jobs want the one ARM64 dev
-  # runner, and with no dependency the scheduler is free to hand it to mutation
-  # first — observed on the tysonx nightly run 30761094644, where Stryker took the
-  # runner and ratchet-bump sat queued behind a job that can burn up to 4 hours.
-  # ratchet-bump is the load-bearing half (it is the only thing that raises the
-  # baseline); mutation is advisory and already swallows its own failure, so it
-  # waits. always() lets it still run when the ratchet fails.
-  mutation:
-    needs: ratchet-bump
-    if: always() && inputs.mutation_project != ''
-    runs-on: [self-hosted, tysonx-dev, tysonx-dev-heavy]
-    timeout-minutes: 240
-    steps:
-      - name: Checkout dev HEAD
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ inputs.dev_branch }}
-      - name: Stryker.NET mutation run
-        run: |
-          dotnet tool install --global dotnet-stryker >/dev/null 2>&1 || true
-          export PATH="$PATH:$HOME/.dotnet/tools"
-          cd "$(dirname "${{ inputs.mutation_project }}")"
-          # Point Stryker at the project to mutate + the suite that kills mutants.
-          # First real run is the acceptance test; if a domain needs a tuned
-          # stryker-config.json it is added then (|| true keeps the nightly green).
-          dotnet stryker \
-            --project "$(basename "${{ inputs.mutation_project }}")" \
-            --test-project "$GITHUB_WORKSPACE/${{ inputs.test_project }}" \
-            --reporter html --reporter markdown --reporter progress || true
-      - name: Attach mutation summary
-        if: always()
-        continue-on-error: true
-        run: |
-          REPORT=$(find . -name "mutation-report.md" | head -1)
-          if [ -n "$REPORT" ]; then
-            { echo "## Mutation score (${{ inputs.domain }})"; cat "$REPORT"; } >> "$GITHUB_STEP_SUMMARY"
-          fi
-      - name: Upload mutation report
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: mutation-report-${{ inputs.domain }}
-          path: '**/mutation-report.html'
-          if-no-files-found: ignore
-          retention-days: 14

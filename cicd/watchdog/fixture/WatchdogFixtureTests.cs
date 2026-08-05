@@ -1,0 +1,21 @@
+namespace Tier0.Watchdog.Fixture;
+
+using System;
+using System.Threading;
+using NUnit.Framework;
+using Tier0.Watchdog.FixtureProduct;
+
+public sealed class WatchdogFixtureTests
+{
+    [Test]
+    public void CleanFollowupPasses() => Assert.That(Calculator.Add(2, 2), Is.EqualTo(4));
+
+    [Test]
+    public void RealTesthostCanBeMadeUnresponsive()
+    {
+        if (Environment.GetEnvironmentVariable("TIER0_REAL_HANG") != "1")
+            Assert.Pass();
+
+        Thread.Sleep(Timeout.Infinite);
+    }
+}
