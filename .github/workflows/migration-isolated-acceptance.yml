@@ -30,7 +30,7 @@ jobs:
 
       - name: Run disposable PostgreSQL acceptance
         env:
-          TIER0_POSTGRES_IMAGE: postgres:18.0-bookworm@sha256:3f55d35b1c710b66e5b8238c56f9d66b741f5a821f857eedff150313bc857af5
+          TIER0_POSTGRES_IMAGE: postgres:18.0-bookworm@sha256:3f55f8895c4ed50603e2fbdfc72fffeeaba3173321fee5cb825bbbeb30d9d854
           TIER0_MIGRATION_ACCEPTANCE_ROOT: ${{ runner.temp }}/migration-acceptance
         run: ./cicd/migrations/test-postgres-validation.sh
 
