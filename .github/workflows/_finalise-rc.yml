@@ -101,6 +101,14 @@ jobs:
           chmod +x .ci-templates/cicd/rc/rc-finalise.sh .ci-templates/cicd/lib/*.sh
           CICD_REGISTRY=.ci-templates/domains.yml .ci-templates/cicd/rc/rc-finalise.sh
 
+      - name: Upload exact-source evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rc-source-evidence-${{ inputs.domain }}
+          path: ${{ runner.temp }}/tier0-rc-source-evidence-${{ github.run_id }}.json
+          if-no-files-found: error
+          retention-days: 30
+
   lifecycle:
     name: Record terminal singleton lifecycle state
     needs: [authorize, finalise]
