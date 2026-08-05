@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# OPERATOR-ONLY Pulse installation payload. This deliberately reuses the existing
-# root-held /etc/tysonx/gate-seed; automation must never install or read that seed.
+# OPERATOR-ONLY Pulse installation payload. The Tier 0 TOTP secret is supplied
+# separately by the operator; automation must never install or read that secret.
 set -euo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root on Pulse" >&2; exit 1; }
 source_dir=$(cd "$(dirname "$0")" && pwd)
-[ -s /etc/tysonx/gate-seed ] || { echo "existing TOTP gate seed is unavailable" >&2; exit 1; }
+[ -s /etc/tier0/totp-secret ] || { echo "operator-supplied Tier 0 TOTP secret is unavailable" >&2; exit 1; }
 id tysonxpulse >/dev/null
 
 install -d -o root -g root -m 0755 /usr/local/libexec/tier0 /usr/local/sbin

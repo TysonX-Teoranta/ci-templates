@@ -16,7 +16,7 @@ done
 
 # Validate the candidate before the privileged copy. Pulse deliberately denies sudo visudo.
 /usr/sbin/visudo -cf "$source_dir/rc-authorization-sudoers"
-sudo /usr/bin/test -s /etc/tysonx/gate-seed
+sudo /usr/bin/test -s /etc/tier0/totp-secret
 sudo /usr/bin/id tysonxpulse >/dev/null
 
 sudo /usr/bin/install -d -o root -g root -m 0755 \

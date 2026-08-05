@@ -112,7 +112,7 @@ def issue(args: argparse.Namespace) -> None:
     if recent_failures >= 5:
         fail("TOTP gateway rate limit exceeded")
     supplied_totp = sys.stdin.readline().strip() if args.totp_stdin else (args.totp or "")
-    if not valid_totp(secret_value("TIER0_TOTP_SECRET", "/etc/tysonx/gate-seed"), supplied_totp, now):
+    if not valid_totp(secret_value("TIER0_TOTP_SECRET", "/etc/tier0/totp-secret"), supplied_totp, now):
         with db:
             audit(db, "authorization_rejected", now, domain=args.domain, actor=args.actor,
                   detail="invalid_totp")
