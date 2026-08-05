@@ -85,6 +85,11 @@ on:
         required: false
         type: boolean
         default: false
+      spine_ref:
+        description: "ci-templates ref used for an acceptance run; production callers use main"
+        required: false
+        type: string
+        default: main
 
 # Serialize the gate on the shared dev box. All zero-tolerance runs execute on the
 # TWO self-hosted tysonx-dev runners now serve this gate (dev cax31 + the caged
@@ -161,7 +166,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: TysonX-Teoranta/ci-templates
-          ref: main
+          ref: ${{ inputs.spine_ref }}
           path: .ci-templates
 
       - name: Capture immutable source identity before verification
