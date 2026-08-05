@@ -4,8 +4,9 @@
 #      committed high-water baseline (never lowers it). The PR gate enforces
 #      "never drop below baseline"; this is the only thing that RAISES it.
 #   2. mutation — Stryker.NET mutation testing: proves the coverage is load-bearing
-#      (tests actually catch injected bugs), not just executed. Reports the score;
-#      never gates a PR. Runs here, never per-PR, so it cannot wedge the gate lane.
+#      (tests actually catch injected bugs), not just executed. It is manual opt-in,
+#      advisory, and capped at one hour so it cannot routinely wedge the sole dev
+#      runner. Surviving mutants guide test review; they are not automatic defects.
 #
 # Called by a domain's thin coverage-nightly.yml on a schedule. Runs on the shared
 # self-hosted dev runner; keep the schedules staggered across domains so two heavy
@@ -39,10 +40,15 @@ on:
         required: false
         type: string
         default: ""
+      run_mutation:
+        description: "Explicitly run advisory mutation analysis (manual use only)"
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: coverage-nightly-tysonx-dev
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   ratchet-bump:
@@ -152,19 +158,21 @@ jobs:
             --title "cicd(${{ inputs.domain }}): ratchet coverage baseline upward" \
             --body "Automated high-water bump from the nightly re-measure. Auto-merges on green."
 
-  # Ordered AFTER ratchet-bump, never beside it. Both jobs want the one ARM64 dev
-  # runner, and with no dependency the scheduler is free to hand it to mutation
-  # first — observed on the tysonx nightly run 30761094644, where Stryker took the
-  # runner and ratchet-bump sat queued behind a job that can burn up to 4 hours.
-  # ratchet-bump is the load-bearing half (it is the only thing that raises the
-  # baseline); mutation is advisory and already swallows its own failure, so it
-  # waits. always() lets it still run when the ratchet fails.
+  # Mutation is useful but advisory. It must be explicitly requested, only runs
+  # after a successful ratchet, and has a short ceiling so scheduled quality work
+  # cannot consume the sole dev runner for hours or outrank required PR checks.
   mutation:
     needs: ratchet-bump
-    if: always() && inputs.mutation_project != ''
+    if: needs.ratchet-bump.result == 'success' && inputs.run_mutation && inputs.mutation_project != ''
     runs-on: [self-hosted, tysonx-dev, tysonx-dev-heavy]
-    timeout-minutes: 240
+    timeout-minutes: 60
     steps:
+      - name: Explain how to use mutation findings
+        run: |
+          echo "## How to use mutation findings" >> "$GITHUB_STEP_SUMMARY"
+          echo "Surviving mutants identify assertions or boundary cases worth reviewing; they are not automatic product defects." >> "$GITHUB_STEP_SUMMARY"
+          echo "Prioritise survivors in authorization, payments, privacy, state transitions, and validation. Add a focused test only when the mutated behaviour violates an intended invariant." >> "$GITHUB_STEP_SUMMARY"
+          echo "Ignore or suppress equivalent mutants only with a documented reason. Mutation score is advisory and must never block required PR CI." >> "$GITHUB_STEP_SUMMARY"
       - name: Checkout dev HEAD
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
