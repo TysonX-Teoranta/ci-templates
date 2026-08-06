@@ -17,6 +17,8 @@
 #          RC_SMOKE_PORT (first candidate port, default 18811)
 # Optional per-repo boot env (NON-SECRET only): .github/scripts/ci/rc-smoke.env
 #   (KEY=VALUE lines, exported into the boot — e.g. a feature kill-switch).
+# Set RC_SMOKE_POSTGRES_IMAGE to a digest-pinned image when startup requires a
+# database; the gate provisions and removes an isolated loopback PostgreSQL.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,6 +48,7 @@ done
 [ -n "$PORT" ] || die "smoke: no free loopback port in candidate range — fail-closed" 2
 
 BOOTLOG="$(mktemp)"
+SMOKE_HOME="$(mktemp -d)"
 log "smoke: booting $APP_DLL on 127.0.0.1:$PORT (env $ASPENV, timeout ${TIMEOUT}s)"
 
 # Optional committed, non-secret boot env from the repo.
@@ -56,12 +59,40 @@ if [ -f "$ENVFILE" ]; then
   . "$ENVFILE"; set +a
 fi
 
+DB_CONTAINER=""
+if [ -n "${RC_SMOKE_POSTGRES_IMAGE:-}" ]; then
+  case "$RC_SMOKE_POSTGRES_IMAGE" in *@sha256:*) ;; *) die "smoke: PostgreSQL image must be pinned by digest" 2 ;; esac
+  require docker
+  require openssl
+  DB_CONTAINER="rc-smoke-pg-${GITHUB_RUN_ID:-$$}-${RANDOM}"
+  DB_PASSWORD="$(openssl rand -hex 24)"
+  log "smoke: starting isolated disposable PostgreSQL"
+  docker run -d --name "$DB_CONTAINER" --label rc.smoke.disposable=true \
+    -e POSTGRES_USER=rc_smoke -e POSTGRES_PASSWORD="$DB_PASSWORD" -e POSTGRES_DB=rc_smoke \
+    -p 127.0.0.1::5432 "$RC_SMOKE_POSTGRES_IMAGE" >/dev/null \
+    || die "smoke: could not start disposable PostgreSQL" 1
+  DB_READY=0
+  for _ in $(seq 1 60); do
+    if docker exec "$DB_CONTAINER" pg_isready -U rc_smoke -d rc_smoke >/dev/null 2>&1; then DB_READY=1; break; fi
+    sleep 1
+  done
+  [ "$DB_READY" = 1 ] || { docker rm -f "$DB_CONTAINER" >/dev/null 2>&1 || true; die "smoke: disposable PostgreSQL did not become ready" 1; }
+  for DB_ROLE in ${RC_SMOKE_POSTGRES_ROLES:-}; do
+    case "$DB_ROLE" in *[!A-Za-z0-9_]*) docker rm -f "$DB_CONTAINER" >/dev/null 2>&1 || true; die "smoke: invalid PostgreSQL role '$DB_ROLE'" 2 ;; esac
+    docker exec "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U rc_smoke -d rc_smoke -c "CREATE ROLE \"$DB_ROLE\";" >/dev/null || die "smoke: could not create PostgreSQL role '$DB_ROLE'" 1
+  done
+  DB_PORT="$(docker port "$DB_CONTAINER" 5432/tcp | sed -n 's/.*://p' | head -1)"
+  case "$DB_PORT" in ''|*[!0-9]*) docker rm -f "$DB_CONTAINER" >/dev/null 2>&1 || true; die "smoke: cannot resolve disposable PostgreSQL port" 1 ;; esac
+  export ConnectionStrings__DatabaseConnection="Host=127.0.0.1;Port=$DB_PORT;Database=rc_smoke;Username=rc_smoke;Password=$DB_PASSWORD;SSL Mode=Disable"
+fi
+
 (
   cd "$PUBLISH_DIR" || exit 3
   ASPNETCORE_URLS="http://127.0.0.1:$PORT" \
   ASPNETCORE_ENVIRONMENT="$ASPENV" \
   DOTNET_ENVIRONMENT="$ASPENV" \
   DOTNET_gcServer=0 \
+  HOME="$SMOKE_HOME" \
   exec setsid dotnet "./$APP_DLL"
 ) >"$BOOTLOG" 2>&1 &
 PID=$!
@@ -74,6 +105,8 @@ cleanup() {
   for _ in 1 2 3 4 5; do kill -0 "$PID" 2>/dev/null || break; sleep 1; done
   kill -9 -- "-$PID" 2>/dev/null || kill -9 "$PID" 2>/dev/null || true
   wait "$PID" 2>/dev/null || true
+  [ -z "$DB_CONTAINER" ] || docker rm -f "$DB_CONTAINER" >/dev/null 2>&1 || true
+  rm -rf "$SMOKE_HOME"
 }
 trap cleanup EXIT
 
