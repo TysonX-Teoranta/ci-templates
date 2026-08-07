@@ -1,14 +1,12 @@
 # _coverage-nightly.yml — CICD v2 (C178289477824693)
-# Nightly, OFF the single-lane PR gate. Two jobs, both deterministic:
+# RETIRED FROM CRON (Crom, 2026-08-07): heavy analysis moved to RC time — the
+# `analyse` job in _finalise-rc.yml (rc-analyse.sh) now owns the coverage
+# ratchet and Tier 2 mutation, bound to the exact cut source. Domain callers
+# keep only workflow_dispatch so a manual re-measure stays possible; none may
+# reintroduce a schedule (the single dev runner is required PR capacity).
 #   1. ratchet-bump — re-measure coverage on the domain's dev HEAD and raise the
 #      committed high-water baseline (never lowers it). The PR gate enforces
-#      "never drop below baseline"; this is the only thing that RAISES it.
-# Mutation testing is deferred to Tier 2. It is not scheduled or executed here;
-# required PR capacity takes precedence over advisory analysis.
-#
-# Called by a domain's thin coverage-nightly.yml on a schedule. Runs on the shared
-# self-hosted dev runner; keep the schedules staggered across domains so two heavy
-# mutation runs never overlap on the box.
+#      "never drop below baseline"; RC analysis is what normally RAISES it now.
 #
 # runs-on carries tysonx-dev-heavy as well as tysonx-dev: the pulse runner also
 # advertises tysonx-dev, and a nightly that lands there has no dev toolchain, so

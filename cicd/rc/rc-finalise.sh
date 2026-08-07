@@ -165,10 +165,28 @@ PROJECT="$APP_PROJECT" RC_VULN_FLOOR="$DEP_FLOOR" bash "$GATES_DIR/rc-gate-dep-v
 
 if [ -n "$TEST_PROJECT" ]; then
   log "tests: $TEST_PROJECT"
-  dotnet test "$TEST_PROJECT" -c Release || die "tests failed — RC refused" 1
+  # trx lands OUTSIDE the workspace so the immutable source-evidence verify below
+  # never sees it; the contract gate reads it right after.
+  TRX_DIR="${RUNNER_TEMP:-$(mktemp -d)}/rc-test-results-$$"
+  rm -rf "$TRX_DIR"
+  dotnet test "$TEST_PROJECT" -c Release \
+    --logger "trx;LogFileName=rc-tests.trx" --results-directory "$TRX_DIR" \
+    || die "tests failed — RC refused" 1
 else
   warn "no test_project for $DOMAIN — tests skipped at cut (gated per-PR only)"
+  TRX_DIR=""
 fi
+
+# --- Central gate: behavioural contracts (Tier 1; zero-AI) ----------------------
+# cicd/contracts.yml in the product repo declares invariant tests that must exist
+# and pass in the RC results; 'contracts: required' in domains.yml makes the
+# manifest itself mandatory. Fail closed — a declaration never weakens reality.
+CONTRACTS_REQ="$(domain_field "$DOMAIN" contracts)"
+log "central gate: behavioural contracts (registry: ${CONTRACTS_REQ:-unset})"
+CONTRACTS_FILE="$WORKROOT/cicd/contracts.yml" TRX_DIR="$TRX_DIR" \
+  CONTRACTS_REQUIRED="$([ "$CONTRACTS_REQ" = "required" ] && echo 1 || echo 0)" \
+  bash "$GATES_DIR/rc-gate-contracts.sh" \
+  || die "contract gate refused the RC (a declared invariant is unproven)" 1
 python3 "$CICD_ROOT/lib/source-evidence.py" verify \
   --repo "$WORKROOT" --allow-untracked .ci-templates --evidence "$SOURCE_EVIDENCE" \
   || die "RC source identity changed during build/test" 1

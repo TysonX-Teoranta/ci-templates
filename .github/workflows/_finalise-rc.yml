@@ -155,6 +155,68 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  analyse:
+    # Tier 2 (report-only; Crom 2026-08-07): coverage ratchet + scoped Stryker
+    # mutation moved from the retired nightly crons to RC time — heavy analysis
+    # burns the single dev runner only when a human deliberately orders a
+    # candidate, and every report is bound to the exact cut source. Runs AFTER
+    # the tag exists; continue-on-error keeps the RC verdict entirely owned by
+    # `finalise` — a wedged analysis can only fail to decorate the candidate.
+    name: RC analysis — coverage ratchet + mutation (report-only)
+    needs: finalise
+    continue-on-error: true
+    runs-on: [self-hosted, "${{ inputs.runner_label }}"]
+    timeout-minutes: 330
+    env:
+      DOTNET_ROOT: /usr/lib/dotnet
+      DOTNET_MULTILEVEL_LOOKUP: 0
+    permissions:
+      contents: write   # ratchet branch push + report upload onto the RC release
+    steps:
+      - name: Checkout the exact cut source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Checkout ci-templates spine
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: TysonX-Teoranta/ci-templates
+          ref: ${{ inputs.spine_ref }}
+          path: .ci-templates
+
+      - name: Select the dev-server .NET build mutex
+        run: |
+          if [ -x /home/deploy/bin/dotnet ]; then
+            echo /home/deploy/bin >> "$GITHUB_PATH"
+          fi
+
+      - name: Analyse the candidate (rc-analyse.sh — fat spine)
+        env:
+          DOMAIN: ${{ inputs.domain }}
+          EXPECTED_SHA: ${{ github.sha }}
+          RC_TAG: ${{ needs.finalise.outputs.rc_tag }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+          EVIDENCE_DIR: ${{ runner.temp }}/tier0-rc-analysis-${{ github.run_id }}
+          # AUTOMERGE_PAT (via caller secrets: inherit) lets the ratchet-bump PR
+          # trigger the gate and self-merge; the fallback token can push the
+          # branch but not open the PR — the spine then cleans the branch up.
+          GH_TOKEN: ${{ secrets.AUTOMERGE_PAT || github.token }}
+          NUGET_PACKAGES: ${{ runner.temp }}/nuget-analyse-${{ github.run_id }}
+        run: |
+          chmod +x .ci-templates/cicd/rc/rc-analyse.sh .ci-templates/cicd/lib/*.sh
+          CICD_REGISTRY=.ci-templates/domains.yml .ci-templates/cicd/rc/rc-analyse.sh
+
+      - name: Upload analysis evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rc-analysis-${{ inputs.domain }}
+          path: ${{ runner.temp }}/tier0-rc-analysis-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 30
+
   notify:
     name: RC finalised notice (essential mail + close the refusal loop)
     needs: finalise
