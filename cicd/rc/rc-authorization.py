@@ -92,14 +92,20 @@ def totp(secret: str, at: int, *, algorithm: str = "SHA1", digits: int = 6,
     return f"{value:0{digits}d}"
 
 
-def valid_totp(secret: str, supplied: str, now: int,
-               algorithms: tuple[str, ...]) -> str | None:
+def find_totp_match(secret: str, supplied: str, now: int,
+                    algorithms: tuple[str, ...], periods: tuple[int, ...],
+                    window: int) -> tuple[str, int, int] | None:
     if not supplied.isdigit() or len(supplied) != 6:
         return None
     for algorithm in algorithms:
-        if any(hmac.compare_digest(supplied, totp(secret, now + delta, algorithm=algorithm))
-               for delta in (-30, 0, 30)):
-            return algorithm
+        for period in periods:
+            for drift_steps in range(-window, window + 1):
+                if hmac.compare_digest(
+                    supplied,
+                    totp(secret, now + drift_steps * period,
+                         algorithm=algorithm, period=period),
+                ):
+                    return algorithm, period, drift_steps
     return None
 
 
@@ -114,6 +120,17 @@ def configured_totp_algorithms() -> tuple[str, ...]:
     if not algorithms or any(item not in TOTP_DIGESTS for item in algorithms):
         fail("invalid configured TOTP algorithm list")
     return algorithms
+
+
+def configured_totp_periods() -> tuple[int, ...]:
+    raw = os.environ.get("TIER0_TOTP_PERIODS", "30,60")
+    try:
+        periods = tuple(int(item.strip()) for item in raw.split(",") if item.strip())
+    except ValueError:
+        fail("invalid configured TOTP period list")
+    if not periods or any(item not in (30, 60) for item in periods):
+        fail("invalid configured TOTP period list")
+    return periods
 
 
 def signature(key: str, auth_id: str, domain: str, actor: str, nonce_hash: str,
@@ -145,17 +162,30 @@ def issue(args: argparse.Namespace) -> None:
     if recent_failures >= 5:
         fail("TOTP gateway rate limit exceeded")
     supplied_totp = sys.stdin.readline().strip() if args.totp_stdin else (args.totp or "")
-    matched_algorithm = valid_totp(
-        secret_value("TIER0_TOTP_SECRET", "/etc/tier0/totp-secret"),
+    totp_secret = secret_value("TIER0_TOTP_SECRET", "/etc/tier0/totp-secret")
+    totp_algorithms = configured_totp_algorithms()
+    totp_periods = configured_totp_periods()
+    matched_totp = find_totp_match(
+        totp_secret,
         supplied_totp,
         now,
-        configured_totp_algorithms(),
+        totp_algorithms,
+        totp_periods,
+        1,
     )
-    if matched_algorithm is None:
+    if matched_totp is None:
+        drift_match = find_totp_match(
+            totp_secret, supplied_totp, now, totp_algorithms, totp_periods, 20,
+        )
         with db:
             audit(db, "authorization_rejected", now, domain=args.domain, actor=args.actor,
-                  detail="invalid_totp")
-        fail("TOTP rejected")
+                  detail="invalid_totp" if drift_match is None else
+                  f"totp_counter_drift={drift_match[2]};period={drift_match[1]};algorithm={drift_match[0]}")
+        if drift_match is not None:
+            fail(f"TOTP rejected: matching seed has counter drift of {drift_match[2]} "
+                 f"x {drift_match[1]} seconds")
+        fail("TOTP rejected: no match for the installed seed across supported algorithms and periods")
+    matched_algorithm, matched_period, _ = matched_totp
     if args.ttl < 30 or args.ttl > 600:
         fail("authorization TTL must be between 30 and 600 seconds")
     # The stable prefix prevents an opaque value beginning with "-" from being
@@ -171,7 +201,8 @@ def issue(args: argparse.Namespace) -> None:
             (auth_id, args.domain, args.actor, nonce_hash, now, expires, sig, None),
         )
         audit(db, "authorization_issued", now, domain=args.domain, actor=args.actor,
-              auth_id=auth_id, detail=f"totp_algorithm={matched_algorithm}")
+              auth_id=auth_id,
+              detail=f"totp_algorithm={matched_algorithm};totp_period={matched_period}")
     print(auth_id)
     if args.dispatch_repo:
         command = ["/usr/sbin/runuser", "-u", "tysonxpulse", "--", "/usr/bin/env",
