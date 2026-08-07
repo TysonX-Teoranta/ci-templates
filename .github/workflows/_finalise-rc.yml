@@ -193,6 +193,37 @@ jobs:
             printf '  cicd promote %s staging --real --go        (opens your TOTP gate)\n' "$DOMAIN"
           } | /usr/sbin/sendmail -f crom@tysonx.ie -t
 
+  lifecycle-proof:
+    name: Verify terminal lifecycle and retain proof
+    needs: [authorize, finalise]
+    if: ${{ success() }}
+    runs-on: [self-hosted, "${{ inputs.pulse_runner_label }}"]
+    timeout-minutes: 3
+    steps:
+      - name: Require terminal-success lifecycle
+        env:
+          DOMAIN: ${{ inputs.domain }}
+          LIFECYCLE_ID: ${{ needs.authorize.outputs.lifecycle_id }}
+        run: |
+          proof="$RUNNER_TEMP/tier0-lifecycle-${GITHUB_RUN_ID}.json"
+          for attempt in $(seq 1 30); do
+            if sudo -n /usr/local/sbin/tier0-rc-authorization status \
+              --domain "$DOMAIN" --lifecycle-id "$LIFECYCLE_ID" \
+              --expect-state complete >"$proof"; then
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
+      - name: Upload terminal lifecycle proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lifecycle-proof-${{ inputs.domain }}
+          path: ${{ runner.temp }}/tier0-lifecycle-${{ github.run_id }}.json
+          if-no-files-found: error
+          retention-days: 30
+
   refused:
     # RC LOOP, not a waterfall (Crom, 2026-07-05): a refusal loops the reasons back
     # into the dev workbench as ONE open 'rc-refusal' issue on the product repo.
