@@ -38,6 +38,9 @@ domains:
     status: active
     test_project: LodgersSite.NUnit.Tests/LodgersSite.NUnit.Tests.csproj
     hygiene: required
+    # Tier 1: the behavioural-contract manifest (cicd/contracts.yml) is mandatory
+    # for lodgers — an RC cut without it refuses (rc-gate-contracts.sh).
+    contracts: required
     # Tier 0 cuts and smoke-boots the exact artifact on the ARM64 dev runner.
     # Cross-architecture ReadyToRun assemblies cannot be executed by that gate.
     rid: linux-arm64

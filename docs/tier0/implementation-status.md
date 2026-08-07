@@ -1,8 +1,10 @@
 # Tier 0 implementation status
 
-Updated: 2026-08-05
+Updated: 2026-08-07
 
-Enforcement: disabled pending the complete ordered end-to-end proof.
+Enforcement: LIVE. The complete ordered end-to-end proof passed on 2026-08-07 —
+authorized singleton devRC run 31187532725 cut `v0.1.1-rc.17` with lifecycle
+`complete`; the Pulse operator surface (`devrc`) is installed and proven.
 
 ## Implemented and locally accepted
 
@@ -40,9 +42,21 @@ Enforcement: disabled pending the complete ordered end-to-end proof.
 - Authorization and exact-source self-tests: 8 authorization, 5 source-evidence, and 5 migration
   contract scenarios passed on 2026-08-05.
 
-## Remaining activation boundary
+## Delivered activation (2026-08-07)
 
-The reviewed Pulse payload is operator-only. Until it is installed and its non-destructive canary
-passes, an authorized singleton devRC and its 359-minute external supervisor cannot be exercised.
-The candidate workflows therefore remain referenced only by the acceptance branches and blocking
-enforcement remains disabled.
+The Pulse operator payload is installed (`/usr/local/bin/devrc`, root-owned) and its canary,
+status, history, and second-order refusal checks all passed. The authorized singleton devRC
+`v0.1.1-rc.17` completed end to end; evidence is retained on the operator workstation under
+`~/tier0-evidence/`. Blocking enforcement is on for the Lodgers dev gate and RC lane.
+
+## Tier 1 and Tier 2 (added 2026-08-07)
+
+- Tier 1 mechanism: `rc-gate-contracts.sh` — the product repo's `cicd/contracts.yml` declares
+  invariant tests that must exist and pass in the RC trx; fail closed; `contracts: required`
+  in the registry makes the manifest itself mandatory. The risk-weighted test-quality audit
+  that extends the manifest is tracked separately.
+- Tier 2 mechanism: the report-only `analyse` job in `_finalise-rc.yml` (`rc-analyse.sh`) —
+  coverage ratchet plus scoped Stryker mutation over `cicd/mutation/*.json`, run at RC time
+  on the exact cut source, hard-capped per domain. The nightly crons are retired; domain
+  callers keep `workflow_dispatch` only. Mutation stays non-blocking until execution is
+  stable, survivors are understood, and thresholds are agreed (per the approved plan).
