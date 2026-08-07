@@ -65,22 +65,52 @@ def secret_value(name: str, path: str) -> str:
     return value
 
 
-def totp(secret: str, at: int) -> str:
+TOTP_DIGESTS = {
+    "SHA1": hashlib.sha1,
+    "SHA256": hashlib.sha256,
+    "SHA512": hashlib.sha512,
+}
+
+
+def totp(secret: str, at: int, *, algorithm: str = "SHA1", digits: int = 6,
+         period: int = 30) -> str:
     try:
         key = base64.b32decode(secret.upper() + "=" * (-len(secret) % 8), casefold=True)
     except Exception:
         fail("invalid TOTP secret encoding")
-    counter = at // 30
-    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    try:
+        digestmod = TOTP_DIGESTS[algorithm.upper()]
+    except KeyError:
+        fail(f"unsupported TOTP algorithm: {algorithm}")
+    if digits not in (6, 8) or period not in (30, 60):
+        fail("unsupported TOTP digits or period")
+    counter = at // period
+    digest = hmac.new(key, struct.pack(">Q", counter), digestmod).digest()
     offset = digest[-1] & 0x0F
-    value = (struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF) % 1_000_000
-    return f"{value:06d}"
+    modulus = 10 ** digits
+    value = (struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF) % modulus
+    return f"{value:0{digits}d}"
 
 
-def valid_totp(secret: str, supplied: str, now: int) -> bool:
-    return supplied.isdigit() and len(supplied) == 6 and any(
-        hmac.compare_digest(supplied, totp(secret, now + delta)) for delta in (-30, 0, 30)
-    )
+def valid_totp(secret: str, supplied: str, now: int,
+               algorithms: tuple[str, ...]) -> str | None:
+    if not supplied.isdigit() or len(supplied) != 6:
+        return None
+    for algorithm in algorithms:
+        if any(hmac.compare_digest(supplied, totp(secret, now + delta, algorithm=algorithm))
+               for delta in (-30, 0, 30)):
+            return algorithm
+    return None
+
+
+def configured_totp_algorithms() -> tuple[str, ...]:
+    raw = secret_value("TIER0_TOTP_ALGORITHMS", "/etc/tier0/totp-algorithms") \
+        if os.environ.get("TIER0_TOTP_ALGORITHMS") or Path("/etc/tier0/totp-algorithms").is_file() \
+        else "SHA1,SHA256,SHA512"
+    algorithms = tuple(item.strip().upper() for item in raw.split(",") if item.strip())
+    if not algorithms or any(item not in TOTP_DIGESTS for item in algorithms):
+        fail("invalid configured TOTP algorithm list")
+    return algorithms
 
 
 def signature(key: str, auth_id: str, domain: str, actor: str, nonce_hash: str,
@@ -112,7 +142,13 @@ def issue(args: argparse.Namespace) -> None:
     if recent_failures >= 5:
         fail("TOTP gateway rate limit exceeded")
     supplied_totp = sys.stdin.readline().strip() if args.totp_stdin else (args.totp or "")
-    if not valid_totp(secret_value("TIER0_TOTP_SECRET", "/etc/tier0/totp-secret"), supplied_totp, now):
+    matched_algorithm = valid_totp(
+        secret_value("TIER0_TOTP_SECRET", "/etc/tier0/totp-secret"),
+        supplied_totp,
+        now,
+        configured_totp_algorithms(),
+    )
+    if matched_algorithm is None:
         with db:
             audit(db, "authorization_rejected", now, domain=args.domain, actor=args.actor,
                   detail="invalid_totp")
@@ -132,7 +168,7 @@ def issue(args: argparse.Namespace) -> None:
             (auth_id, args.domain, args.actor, nonce_hash, now, expires, sig, None),
         )
         audit(db, "authorization_issued", now, domain=args.domain, actor=args.actor,
-              auth_id=auth_id)
+              auth_id=auth_id, detail=f"totp_algorithm={matched_algorithm}")
     print(auth_id)
     if args.dispatch_repo:
         command = ["/usr/sbin/runuser", "-u", "tysonxpulse", "--", "/usr/bin/env",
