@@ -9,7 +9,7 @@ if [ ! -t 0 ] || [ ! -t 1 ]; then
 fi
 source_dir=$(cd "$(dirname "$0")" && pwd)
 
-for file in rc-authorization.py rc-authorization-entrypoint.sh rc-supervisor.sh \
+for file in rc-authorization.py rc-authorization-entrypoint.sh rc-supervisor.sh devrc \
   rc-authorization-sudoers; do
   [ -s "$source_dir/$file" ] || { echo "payload file is missing: $file" >&2; exit 1; }
 done
@@ -28,6 +28,8 @@ sudo /usr/bin/install -o root -g root -m 0755 "$source_dir/rc-authorization-entr
   /usr/local/sbin/tier0-rc-authorization
 sudo /usr/bin/install -o root -g root -m 0755 "$source_dir/rc-supervisor.sh" \
   /usr/local/libexec/tier0/rc-supervisor.sh
+sudo /usr/bin/install -o root -g root -m 0755 "$source_dir/devrc" \
+  /usr/local/bin/devrc
 
 if ! sudo /usr/bin/test -s /etc/tier0/auth-signing-key; then
   sudo /usr/bin/openssl rand -base64 -out /etc/tier0/auth-signing-key 48

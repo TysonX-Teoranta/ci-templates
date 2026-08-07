@@ -16,6 +16,8 @@ install -o root -g root -m 0755 "$source_dir/rc-authorization-entrypoint.sh" \
   /usr/local/sbin/tier0-rc-authorization
 install -o root -g root -m 0755 "$source_dir/rc-supervisor.sh" \
   /usr/local/libexec/tier0/rc-supervisor.sh
+install -o root -g root -m 0755 "$source_dir/devrc" \
+  /usr/local/bin/devrc
 if [ ! -s /etc/tier0/auth-signing-key ]; then
   umask 077
   head -c 48 /dev/urandom | base64 > /etc/tier0/auth-signing-key

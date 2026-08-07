@@ -99,6 +99,13 @@ class AuthorizationTests(unittest.TestCase):
                               "--totp", code(), "--now", NOW, ok=False)
         self.assertIn("actor is not authorized", result.stderr)
 
+    def test_quiet_issue_does_not_expose_authorization_id(self):
+        result = self.run_cli(
+            "issue", "--domain", "lodgers", "--actor", "lodgings-ie",
+            "--totp", code(), "--now", NOW, "--quiet",
+        )
+        self.assertEqual("", result.stdout)
+
     def test_expired_and_direct_dispatch_are_rejected(self):
         auth = self.issue(ttl=30)
         self.assertIn("expired", self.claim(auth, now=NOW + 31).stderr)

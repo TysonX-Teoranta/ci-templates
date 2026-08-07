@@ -351,6 +351,7 @@ fi
 # --- Tier 0 authorization and immutable provenance boundaries -----------------
 if command -v python3 >/dev/null 2>&1; then
   python3 "$CICD_ROOT/rc/test-rc-authorization.py" >/dev/null 2>&1
+  bash "$CICD_ROOT/rc/test-devrc.sh" >/dev/null 2>&1
   ok "tier0/authorization-transactional-boundary" "$?" "0"
   python3 "$CICD_ROOT/lib/test-source-evidence.py" >/dev/null 2>&1
   ok "tier0/source-evidence-binding" "$?" "0"

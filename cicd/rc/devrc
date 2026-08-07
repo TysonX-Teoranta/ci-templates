@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# Human-operated devRC singleton manager. Installed on Pulse as /usr/local/bin/devrc.
+set -euo pipefail
+
+ORG=${DEVRC_ORG:-TysonX-Teoranta}
+AUTH=${DEVRC_AUTH:-/usr/local/sbin/tier0-rc-authorization}
+GH_CONFIG_DIR=${GH_CONFIG_DIR:-/home/deploy/.config/gh}
+export GH_CONFIG_DIR
+
+die() { printf 'devrc: %s\n' "$*" >&2; exit 1; }
+usage() {
+  cat <<'EOF'
+Usage:
+  devrc status lodgers       Show the singleton lifecycle, open RC and latest run
+  devrc order lodgers        Order a new RC; prompts for the operator's TOTP
+  devrc wait lodgers         Follow the latest RC run and prove terminal state
+  devrc history lodgers [N]  Show recent RC workflow runs
+  devrc drop lodgers         Delete the completed open RC after exact confirmation
+
+Rules:
+  - Run this command on Pulse as the human operator.
+  - One building/active RC lifecycle is allowed per domain.
+  - One completed, open RC candidate is allowed per domain.
+  - A second order is refused; it is never queued and never replaces active work.
+EOF
+}
+
+require_domain() {
+  [ "${1:-}" = lodgers ] || die "supported domain is 'lodgers'"
+}
+
+auth_status() {
+  sudo -n "$AUTH" status --domain "$1"
+}
+
+field() {
+  jq -r --arg key "$2" '.[$key] // empty' <<<"$1"
+}
+
+open_rc() {
+  gh release list -R "$ORG/$1" --limit 30 --json tagName,isPrerelease \
+    --jq '[.[] | select(.isPrerelease) | .tagName | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+-rc\\.[0-9]+$"))][0] // empty'
+}
+
+latest_run_id() {
+  gh run list -R "$ORG/$1" --workflow finalise-rc.yml --limit 1 \
+    --json databaseId --jq '.[0].databaseId // empty'
+}
+
+status() {
+  local domain=$1 json state lifecycle ended candidate run
+  json=$(auth_status "$domain") || die "cannot read the singleton lifecycle; refusing to report an empty slot"
+  state=$(field "$json" state); lifecycle=$(field "$json" id); ended=$(field "$json" ended_at)
+  printf 'Lifecycle: %s (%s)' "$state" "$lifecycle"
+  [ -n "$ended" ] && printf ', ended %s' "$ended"
+  printf '\n'
+  candidate=$(open_rc "$domain")
+  if [ -n "$candidate" ]; then printf 'Open RC:   %s\n' "$candidate"; else printf 'Open RC:   none\n'; fi
+  run=$(latest_run_id "$domain")
+  if [ -n "$run" ]; then
+    gh run view "$run" -R "$ORG/$domain" --json status,conclusion,url \
+      --jq '"Latest run: \(.status) \(.conclusion // "") \(.url)"'
+  else
+    printf 'Latest run: none\n'
+  fi
+}
+
+order() {
+  local domain=$1 lifecycle candidate id state
+  lifecycle=$(auth_status "$domain") || die "cannot read the singleton lifecycle; RC order refused"
+  state=$(field "$lifecycle" state)
+  case "$state" in building|active)
+    id=$(field "$lifecycle" id)
+    die "RC order refused: lifecycle $id is $state. Nothing was queued or replaced. Run 'devrc status $domain'."
+    ;;
+  esac
+  candidate=$(open_rc "$domain")
+  if [ -n "$candidate" ]; then
+    die "RC order refused: completed candidate $candidate already occupies the singleton slot. Keep it, or run 'devrc drop $domain' before ordering another."
+  fi
+  [ -t 0 ] && [ -t 1 ] || die "order requires an interactive Pulse terminal"
+  printf 'Ordering an RC from the current %s-dev head.\n' "$domain"
+  printf 'Enter your 6-digit TOTP and press Enter: '
+  sudo -n "$AUTH" issue \
+    --domain "$domain" --actor lodgings-ie --totp-stdin --ttl 600 --quiet \
+    --dispatch-repo "$ORG/$domain" --workflow finalise-rc.yml --ref "$domain-dev"
+  printf 'RC ordered. Use: devrc wait %s\n' "$domain"
+}
+
+wait_for_rc() {
+  local domain=$1 run json state
+  run=$(latest_run_id "$domain")
+  [ -n "$run" ] || die "no RC run exists for $domain"
+  gh run watch "$run" -R "$ORG/$domain" --exit-status
+  json=$(auth_status "$domain")
+  state=$(field "$json" state)
+  [ "$state" = complete ] || die "workflow ended but lifecycle is '$state', not complete"
+  printf 'RC complete.\n'
+  status "$domain"
+}
+
+history() {
+  local domain=$1 limit=${2:-10}
+  [[ "$limit" =~ ^[1-9][0-9]?$ ]] || die "history count must be 1-99"
+  gh run list -R "$ORG/$domain" --workflow finalise-rc.yml --limit "$limit" \
+    --json databaseId,status,conclusion,headSha,createdAt,url \
+    --jq '.[] | [.databaseId,.status,(.conclusion // ""),.headSha,.createdAt,.url] | @tsv'
+}
+
+drop() {
+  local domain=$1 lifecycle state candidate answer
+  lifecycle=$(auth_status "$domain") || die "cannot read the singleton lifecycle; drop refused"
+  state=$(field "$lifecycle" state)
+  case "$state" in building|active)
+    die "cannot drop while lifecycle $(field "$lifecycle" id) is $state";;
+  esac
+  candidate=$(open_rc "$domain")
+  [ -n "$candidate" ] || die "there is no open RC to drop"
+  [ -t 0 ] && [ -t 1 ] || die "drop requires an interactive Pulse terminal"
+  printf 'This deletes prerelease and tag %s. Type the exact tag to confirm: ' "$candidate"
+  read -r answer
+  [ "$answer" = "$candidate" ] || die "confirmation did not match; nothing changed"
+  gh release delete "$candidate" -R "$ORG/$domain" --cleanup-tag --yes
+  printf 'Dropped %s. The singleton candidate slot is now empty.\n' "$candidate"
+}
+
+command=${1:-help}; shift || true
+case "$command" in
+  help|-h|--help) usage;;
+  status|order|wait|drop)
+    [ "$#" -eq 1 ] || die "usage: devrc $command lodgers"
+    require_domain "$1"; "$command" "$1";;
+  history)
+    [ "$#" -ge 1 ] && [ "$#" -le 2 ] || die "usage: devrc history lodgers [N]"
+    require_domain "$1"; history "$@";;
+  *) die "unknown command '$command'; run 'devrc help'";;
+esac
