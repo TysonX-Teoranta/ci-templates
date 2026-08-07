@@ -357,6 +357,8 @@ if command -v python3 >/dev/null 2>&1; then
   ok "tier0/source-evidence-binding" "$?" "0"
   python3 "$CICD_ROOT/migrations/test-migration-contract.py" >/dev/null 2>&1
   ok "tier0/migration-contract-routing" "$?" "0"
+  bash "$CICD_ROOT/rc/test-rc-contracts.sh" >/dev/null 2>&1
+  ok "tier1/behavioural-contract-gate" "$?" "0"
 fi
 
 # --- Verdict ------------------------------------------------------------------
