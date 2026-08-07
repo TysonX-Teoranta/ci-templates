@@ -177,6 +177,11 @@ else
             -exec cp {} "$dest/" \; 2>/dev/null
           rm -rf "$out"
         done
+    # PROVEN 2026-08-07: Stryker exits 0 even on "failed to mutate" — the exit
+    # code alone lies. Completed requires the report to actually exist.
+    if [ "$outcome" = "completed" ] && [ ! -f "$dest/mutation-report.json" ]; then
+      outcome="failed-no-report"
+    fi
     MUT_SUMMARY="$(jq -c --arg n "$name" --arg o "$outcome" --argjson s "$seconds" \
       '. + [{domain:$n, outcome:$o, seconds:$s}]' <<<"$MUT_SUMMARY")"
     log "mutation[$name]: $outcome after ${seconds}s"
