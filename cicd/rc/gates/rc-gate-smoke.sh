@@ -60,6 +60,9 @@ if [ -f "$ENVFILE" ]; then
 fi
 
 DB_CONTAINER=""
+cleanup_database() {
+  [ -z "$DB_CONTAINER" ] || docker rm -f "$DB_CONTAINER" >/dev/null 2>&1 || true
+}
 if [ -n "${RC_SMOKE_POSTGRES_IMAGE:-}" ]; then
   case "$RC_SMOKE_POSTGRES_IMAGE" in *@sha256:*) ;; *) die "smoke: PostgreSQL image must be pinned by digest" 2 ;; esac
   require docker
@@ -73,13 +76,18 @@ if [ -n "${RC_SMOKE_POSTGRES_IMAGE:-}" ]; then
     || die "smoke: could not start disposable PostgreSQL" 1
   DB_READY=0
   for _ in $(seq 1 60); do
-    if docker exec "$DB_CONTAINER" pg_isready -U rc_smoke -d rc_smoke >/dev/null 2>&1; then DB_READY=1; break; fi
+    # pg_isready only proves that the server accepts connections; it can return
+    # success while the entrypoint is still creating POSTGRES_DB.  Prove the
+    # requested database is usable with a real SQL round trip before continuing.
+    if [ "$(docker exec "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U rc_smoke -d rc_smoke \
+      -Atqc 'SELECT 1' 2>/dev/null || true)" = 1 ]; then DB_READY=1; break; fi
     sleep 1
   done
-  [ "$DB_READY" = 1 ] || { docker rm -f "$DB_CONTAINER" >/dev/null 2>&1 || true; die "smoke: disposable PostgreSQL did not become ready" 1; }
+  [ "$DB_READY" = 1 ] || { cleanup_database; die "smoke: disposable PostgreSQL did not become ready" 1; }
   for DB_ROLE in ${RC_SMOKE_POSTGRES_ROLES:-}; do
-    case "$DB_ROLE" in *[!A-Za-z0-9_]*) docker rm -f "$DB_CONTAINER" >/dev/null 2>&1 || true; die "smoke: invalid PostgreSQL role '$DB_ROLE'" 2 ;; esac
-    docker exec "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U rc_smoke -d rc_smoke -c "CREATE ROLE \"$DB_ROLE\";" >/dev/null || die "smoke: could not create PostgreSQL role '$DB_ROLE'" 1
+    case "$DB_ROLE" in *[!A-Za-z0-9_]*) cleanup_database; die "smoke: invalid PostgreSQL role '$DB_ROLE'" 2 ;; esac
+    docker exec "$DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U rc_smoke -d rc_smoke -c "CREATE ROLE \"$DB_ROLE\";" >/dev/null \
+      || { cleanup_database; die "smoke: could not create PostgreSQL role '$DB_ROLE'" 1; }
   done
   DB_PORT="$(docker port "$DB_CONTAINER" 5432/tcp | sed -n 's/.*://p' | head -1)"
   case "$DB_PORT" in ''|*[!0-9]*) docker rm -f "$DB_CONTAINER" >/dev/null 2>&1 || true; die "smoke: cannot resolve disposable PostgreSQL port" 1 ;; esac
@@ -105,7 +113,7 @@ cleanup() {
   for _ in 1 2 3 4 5; do kill -0 "$PID" 2>/dev/null || break; sleep 1; done
   kill -9 -- "-$PID" 2>/dev/null || kill -9 "$PID" 2>/dev/null || true
   wait "$PID" 2>/dev/null || true
-  [ -z "$DB_CONTAINER" ] || docker rm -f "$DB_CONTAINER" >/dev/null 2>&1 || true
+  cleanup_database
   rm -rf "$SMOKE_HOME"
 }
 trap cleanup EXIT

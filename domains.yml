@@ -38,7 +38,9 @@ domains:
     status: active
     test_project: LodgersSite.NUnit.Tests/LodgersSite.NUnit.Tests.csproj
     hygiene: required
-    rid: linux-x64
+    # Tier 0 cuts and smoke-boots the exact artifact on the ARM64 dev runner.
+    # Cross-architecture ReadyToRun assemblies cannot be executed by that gate.
+    rid: linux-arm64
     db_project: LodgersSite/LodgersSite.csproj
     db_context: ApplicationDbContext
     loop_cap: 5   # RC refusal-loop bound before terminal escalation (Crom default 5; per-domain adjustable)
