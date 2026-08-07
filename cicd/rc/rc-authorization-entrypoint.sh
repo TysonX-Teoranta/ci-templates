@@ -18,6 +18,9 @@ case "$1" in
   lifecycle)
     # Non-interactive terminal-state recording; lifecycle IDs are unguessable.
     ;;
+  status)
+    # Read-only, machine-readable lifecycle proof for CI and operators.
+    ;;
   issue|recover)
     # Authorization creation and stale recovery are explicit operator actions and
     # can never be invoked by a non-interactive Actions job.

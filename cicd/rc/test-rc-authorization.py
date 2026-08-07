@@ -153,6 +153,25 @@ class AuthorizationTests(unittest.TestCase):
         result = self.claim(auth, actor="attacker")
         self.assertIn("signature mismatch", result.stderr)
 
+    def test_status_reports_latest_lifecycle_and_can_require_terminal_state(self):
+        auth = self.issue()
+        lifecycle = self.claim(auth, ok=True).stdout.strip()
+        building = self.run_cli("status", "--domain", "lodgers")
+        self.assertEqual(lifecycle, __import__("json").loads(building.stdout)["id"])
+        self.assertIn("got building", self.run_cli(
+            "status", "--domain", "lodgers", "--lifecycle-id", lifecycle,
+            "--expect-state", "complete", ok=False,
+        ).stderr)
+        self.run_cli("lifecycle", "activate", "--lifecycle-id", lifecycle,
+                     "--actor", "lodgings-ie", "--now", NOW + 1)
+        self.run_cli("lifecycle", "complete", "--lifecycle-id", lifecycle,
+                     "--actor", "lodgings-ie", "--now", NOW + 2)
+        complete = self.run_cli(
+            "status", "--domain", "lodgers", "--lifecycle-id", lifecycle,
+            "--expect-state", "complete",
+        )
+        self.assertEqual("complete", __import__("json").loads(complete.stdout)["state"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

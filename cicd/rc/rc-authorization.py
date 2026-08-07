@@ -303,6 +303,29 @@ def recover(args: argparse.Namespace) -> None:
               detail=args.reason)
 
 
+def status(args: argparse.Namespace) -> None:
+    """Print one lifecycle without exposing direct access to the root-owned store."""
+    db = connect(args.store)
+    if args.lifecycle_id:
+        row = db.execute(
+            "SELECT id,domain,state,created_at,last_heartbeat,ended_at,recovery_reason "
+            "FROM lifecycles WHERE id=? AND domain=?",
+            (args.lifecycle_id, args.domain),
+        ).fetchone()
+    else:
+        row = db.execute(
+            "SELECT id,domain,state,created_at,last_heartbeat,ended_at,recovery_reason "
+            "FROM lifecycles WHERE domain=? ORDER BY created_at DESC LIMIT 1",
+            (args.domain,),
+        ).fetchone()
+    if row is None:
+        fail("lifecycle not found")
+    result = dict(row)
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    if args.expect_state and row["state"] != args.expect_state:
+        fail(f"expected lifecycle state {args.expect_state}, got {row['state']}")
+
+
 def initialize(args: argparse.Namespace) -> None:
     connect(args.store).close()
 
@@ -332,6 +355,10 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--lifecycle-id", required=True); r.add_argument("--operator", required=True)
     r.add_argument("--reason", required=True); r.add_argument("--stale-after", type=int, default=900)
     r.add_argument("--now", type=int); r.set_defaults(func=recover)
+    s = sub.add_parser("status")
+    s.add_argument("--domain", required=True); s.add_argument("--lifecycle-id")
+    s.add_argument("--expect-state", choices=("building", "active", "complete", "failed", "recovered"))
+    s.set_defaults(func=status)
     return p
 
 
