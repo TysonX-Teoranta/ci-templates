@@ -4,6 +4,10 @@
 test and coverage deadlines, bounds dump collection, kills the complete cgroup, and reports infrastructure
 timeouts separately from ordinary test exits.
 
+The primary coverage hard deadline is 60 minutes. A separate 25-minute
+no-progress deadline still terminates a stalled collector, while valid Coverlet
+CPU progress may continue beyond 30 minutes on the full Lodgers assembly set.
+
 Destructive acceptance is deliberately not runnable on a normal runner. `isolated-acceptance.sh` requires all
 of the following:
 

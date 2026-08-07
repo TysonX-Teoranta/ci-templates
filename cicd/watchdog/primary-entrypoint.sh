@@ -24,6 +24,6 @@ esac
 exec /usr/local/libexec/tier0/test-watchdog.sh \
   --heartbeat "$EVIDENCE_DIR/heartbeat" --phase-file "$EVIDENCE_DIR/phase" \
   --coverage "$EVIDENCE_DIR/coverage.xml" --diagnostics "$EVIDENCE_DIR/diagnostics" \
-  --test-deadline 8100 --coverage-deadline 1800 --coverage-processing-deadline 600 \
+  --test-deadline 8100 --coverage-deadline 3600 --coverage-processing-deadline 600 \
   --progress-deadline 1500 --dump-deadline 120 --cpu-quota 400% --memory-max 15G \
   --run-as-user tysonxdev -- "$@"

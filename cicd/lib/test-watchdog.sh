@@ -7,7 +7,7 @@ set -euo pipefail
 usage() {
   cat >&2 <<'EOF'
 usage: test-watchdog.sh --heartbeat FILE --phase-file FILE --coverage FILE
-       --diagnostics DIR [--test-deadline 8100] [--coverage-deadline 1800]
+       --diagnostics DIR [--test-deadline 8100] [--coverage-deadline 3600]
        [--coverage-processing-deadline 600] [--progress-deadline 1500]
        [--dump-deadline 120] [--dump-command FILE] [--cleanup-hook FILE]
        [--cpu-quota 400%] [--memory-max 15G] [--run-as-user USER]
@@ -19,7 +19,7 @@ EOF
 HEARTBEAT="" PHASE_FILE="" COVERAGE_FILE="" DIAGNOSTICS="" CLEANUP_HOOK="" DUMP_COMMAND=""
 CPU_QUOTA=400% MEMORY_MAX=15G
 RUN_AS_USER=""
-TEST_DEADLINE=8100 COVERAGE_DEADLINE=1800 COVERAGE_PROCESSING_DEADLINE=600
+TEST_DEADLINE=8100 COVERAGE_DEADLINE=3600 COVERAGE_PROCESSING_DEADLINE=600
 PROGRESS_DEADLINE=1500 DUMP_DEADLINE=120
 while [ "$#" -gt 0 ]; do
   case "$1" in
