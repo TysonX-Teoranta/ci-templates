@@ -43,6 +43,7 @@ domains:
     rid: linux-arm64
     db_project: LodgersSite/LodgersSite.csproj
     db_context: ApplicationDbContext
+    license_package_map: "Microsoft.ML@1.6.0=MIT Microsoft.ML.CpuMath@1.6.0=MIT Microsoft.ML.DataView@1.6.0=MIT Microsoft.ML.TensorFlow@1.6.0=MIT Microsoft.ML.Vision@1.6.0=MIT MimeTypesMap@1.0.8=MIT NsfwSpy@3.5.0=MIT NumSharp.Lite@0.1.8=Apache-2.0 SciSharp.TensorFlow.Redist-Linux-GPU@2.3.1=Apache-2.0 SciSharp.TensorFlow.Redist-Windows-GPU@2.3.1=Apache-2.0 Stripe.net@52.1.1=MIT System.IO.FileSystem.AccessControl@4.5.0=MIT TensorFlow.NET@0.20.1=Apache-2.0 Twilio@7.14.9=MIT"
     loop_cap: 5   # RC refusal-loop bound before terminal escalation (Crom default 5; per-domain adjustable)
   kukuln:
     # Product launch is on hold; the CICD dev + RC lanes are active (parity with
