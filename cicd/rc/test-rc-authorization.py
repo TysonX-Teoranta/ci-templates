@@ -16,9 +16,9 @@ NOW = 1_800_000_000
 SECRET = base64.b32encode(b"tier0-test-totp-key").decode().rstrip("=")
 
 
-def code(at=NOW):
+def code(at=NOW, algorithm="sha1"):
     key = base64.b32decode(SECRET + "=" * (-len(SECRET) % 8))
-    digest = hmac.new(key, struct.pack(">Q", at // 30), hashlib.sha1).digest()
+    digest = hmac.new(key, struct.pack(">Q", at // 30), getattr(hashlib, algorithm)).digest()
     offset = digest[-1] & 15
     return f"{(struct.unpack('>I', digest[offset:offset+4])[0] & 0x7fffffff) % 1000000:06d}"
 
@@ -58,6 +58,27 @@ class AuthorizationTests(unittest.TestCase):
         result = self.run_cli("issue", "--domain", "lodgers", "--actor", "lodgings-ie",
                               "--totp", "000000", "--now", NOW, ok=False)
         self.assertIn("TOTP rejected", result.stderr)
+
+    def test_standard_authenticator_algorithms_are_accepted(self):
+        for offset, algorithm in enumerate(("sha1", "sha256", "sha512")):
+            now = NOW + offset * 90
+            result = self.run_cli(
+                "issue", "--domain", "lodgers", "--actor", "lodgings-ie",
+                "--totp", code(now, algorithm), "--now", now,
+            )
+            self.assertTrue(result.stdout.startswith("t0_"), algorithm)
+
+    def test_rfc6238_vectors_are_independent_of_cli(self):
+        module = __import__("runpy").run_path(str(SCRIPT))
+        vectors = {
+            "SHA1": (b"12345678901234567890", "94287082"),
+            "SHA256": (b"12345678901234567890123456789012", "46119246"),
+            "SHA512": (b"1234567890123456789012345678901234567890123456789012345678901234", "90693936"),
+        }
+        for algorithm, (raw_secret, expected) in vectors.items():
+            encoded = base64.b32encode(raw_secret).decode().rstrip("=")
+            actual = module["totp"](encoded, 59, algorithm=algorithm, digits=8)
+            self.assertEqual(expected, actual, algorithm)
 
     def test_unauthorized_actor_is_rejected(self):
         result = self.run_cli("issue", "--domain", "lodgers", "--actor", "attacker",
