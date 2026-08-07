@@ -203,7 +203,8 @@ def issue(args: argparse.Namespace) -> None:
         audit(db, "authorization_issued", now, domain=args.domain, actor=args.actor,
               auth_id=auth_id,
               detail=f"totp_algorithm={matched_algorithm};totp_period={matched_period}")
-    print(auth_id)
+    if not args.quiet:
+        print(auth_id)
     if args.dispatch_repo:
         command = ["/usr/sbin/runuser", "-u", "tysonxpulse", "--", "/usr/bin/env",
                    "HOME=/home/deploy", "GH_CONFIG_DIR=/home/deploy/.config/gh",
@@ -342,6 +343,7 @@ def parser() -> argparse.ArgumentParser:
     totp_input.add_argument("--totp"); totp_input.add_argument("--totp-stdin", action="store_true")
     i.add_argument("--ttl", type=int, default=180)
     i.add_argument("--now", type=int); i.add_argument("--dispatch-repo")
+    i.add_argument("--quiet", action="store_true")
     i.add_argument("--workflow", default="finalise-rc.yml"); i.add_argument("--ref", default="lodgers-dev")
     i.set_defaults(func=issue)
     c = sub.add_parser("claim")
