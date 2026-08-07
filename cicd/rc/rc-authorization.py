@@ -104,9 +104,12 @@ def valid_totp(secret: str, supplied: str, now: int,
 
 
 def configured_totp_algorithms() -> tuple[str, ...]:
-    raw = secret_value("TIER0_TOTP_ALGORITHMS", "/etc/tier0/totp-algorithms") \
-        if os.environ.get("TIER0_TOTP_ALGORITHMS") or Path("/etc/tier0/totp-algorithms").is_file() \
-        else "SHA1,SHA256,SHA512"
+    raw = os.environ.get("TIER0_TOTP_ALGORITHMS", "")
+    if not raw:
+        try:
+            raw = Path("/etc/tier0/totp-algorithms").read_text(encoding="utf-8").strip()
+        except (FileNotFoundError, PermissionError):
+            raw = "SHA1,SHA256,SHA512"
     algorithms = tuple(item.strip().upper() for item in raw.split(",") if item.strip())
     if not algorithms or any(item not in TOTP_DIGESTS for item in algorithms):
         fail("invalid configured TOTP algorithm list")
