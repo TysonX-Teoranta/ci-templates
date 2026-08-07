@@ -16,9 +16,9 @@ NOW = 1_800_000_000
 SECRET = base64.b32encode(b"tier0-test-totp-key").decode().rstrip("=")
 
 
-def code(at=NOW, algorithm="sha1"):
+def code(at=NOW, algorithm="sha1", period=30):
     key = base64.b32decode(SECRET + "=" * (-len(SECRET) % 8))
-    digest = hmac.new(key, struct.pack(">Q", at // 30), getattr(hashlib, algorithm)).digest()
+    digest = hmac.new(key, struct.pack(">Q", at // period), getattr(hashlib, algorithm)).digest()
     offset = digest[-1] & 15
     return f"{(struct.unpack('>I', digest[offset:offset+4])[0] & 0x7fffffff) % 1000000:06d}"
 
@@ -67,6 +67,20 @@ class AuthorizationTests(unittest.TestCase):
                 "--totp", code(now, algorithm), "--now", now,
             )
             self.assertTrue(result.stdout.startswith("t0_"), algorithm)
+
+    def test_sixty_second_authenticator_period_is_accepted(self):
+        result = self.run_cli(
+            "issue", "--domain", "lodgers", "--actor", "lodgings-ie",
+            "--totp", code(NOW, period=60), "--now", NOW,
+        )
+        self.assertTrue(result.stdout.startswith("t0_"))
+
+    def test_matching_seed_reports_counter_drift_without_accepting(self):
+        result = self.run_cli(
+            "issue", "--domain", "lodgers", "--actor", "lodgings-ie",
+            "--totp", code(NOW + 5 * 30), "--now", NOW, ok=False,
+        )
+        self.assertIn("counter drift of 5 x 30 seconds", result.stderr)
 
     def test_rfc6238_vectors_are_independent_of_cli(self):
         module = __import__("runpy").run_path(str(SCRIPT))
