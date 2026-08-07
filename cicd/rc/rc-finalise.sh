@@ -259,6 +259,7 @@ log "SBOM: $SBOM ($SBOM_SHA)"
 # core-dumps on the runner). Per-domain allowlist via rc.conf RC_LICENSE_ALLOW.
 # shellcheck disable=SC1091
 LIC_ALLOW="$( ( [ -r .github/scripts/ci/rc.conf ] && . .github/scripts/ci/rc.conf; printf '%s' "${RC_LICENSE_ALLOW:-}" ) )"
+# shellcheck disable=SC1091  # rc.conf lives in the calling product repository
 LIC_PACKAGE_MAP="$( ( [ -r .github/scripts/ci/rc.conf ] && . .github/scripts/ci/rc.conf; printf '%s' "${RC_LICENSE_PACKAGE_MAP:-}" ) )"
 [ -n "$LIC_PACKAGE_MAP" ] || LIC_PACKAGE_MAP="$(domain_field "$DOMAIN" license_package_map)"
 log "central gate: licence compliance (from SBOM)"
