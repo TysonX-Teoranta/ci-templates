@@ -127,9 +127,14 @@ drop() {
 command=${1:-help}; shift || true
 case "$command" in
   help|-h|--help) usage;;
-  status|order|wait|drop)
+  status|order|drop)
     [ "$#" -eq 1 ] || die "usage: devrc $command lodgers"
     require_domain "$1"; "$command" "$1";;
+  wait)
+    # The function is wait_for_rc — dispatching "$command" here would hit the
+    # bash BUILTIN wait ("not a pid or valid job spec"). Proven live 2026-08-08.
+    [ "$#" -eq 1 ] || die "usage: devrc wait lodgers"
+    require_domain "$1"; wait_for_rc "$1";;
   history)
     [ "$#" -ge 1 ] && [ "$#" -le 2 ] || die "usage: devrc history lodgers [N]"
     require_domain "$1"; history "$@";;

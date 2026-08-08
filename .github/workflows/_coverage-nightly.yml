@@ -37,9 +37,12 @@ on:
         type: string
         default: ""
 
+# Per-domain group, queue not kill: the old shared group + cancel-in-progress
+# let one domain's run shoot another's mid-measure (4 of 8 lodgers nightlies
+# died cancelled in the last cron week). Manual dispatches now queue instead.
 concurrency:
-  group: coverage-nightly-tysonx-dev
-  cancel-in-progress: true
+  group: coverage-nightly-${{ inputs.domain }}
+  cancel-in-progress: false
 
 jobs:
   ratchet-bump:
