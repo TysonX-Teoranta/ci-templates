@@ -81,10 +81,29 @@ order() {
   [ -t 0 ] && [ -t 1 ] || die "order requires an interactive Pulse terminal"
   printf 'Ordering an RC from the current %s-dev head.\n' "$domain"
   printf 'Enter your 6-digit TOTP and press Enter: '
+  local t0 run_id
+  t0=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   sudo -n "$AUTH" issue \
     --domain "$domain" --actor lodgings-ie --totp-stdin --ttl 600 --quiet \
     --dispatch-repo "$ORG/$domain" --workflow finalise-rc.yml --ref "$domain-dev"
-  printf 'RC ordered. Use: devrc wait %s\n' "$domain"
+  # The boundary's own output above may show the PREVIOUS run's URL (it lists
+  # "latest" before GitHub materializes the new run) — and GitHub occasionally
+  # accepts a dispatch yet never spawns a run (seen live 2026-08-08). Trust
+  # neither: poll for a run created after this order and report the truth.
+  printf 'Dispatch accepted; confirming the run exists'
+  run_id=""
+  for _ in $(seq 12); do
+    run_id=$(gh run list -R "$ORG/$domain" --workflow finalise-rc.yml \
+      --created ">$t0" --limit 1 --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null)
+    [ -n "$run_id" ] && break
+    printf '.'
+    sleep 5
+  done
+  printf '\n'
+  [ -n "$run_id" ] || die "dispatch was accepted but NO run appeared within 60s — GitHub dropped or delayed it. Nothing is running; re-run 'devrc order $domain'."
+  printf 'RC ordered — THIS is your run (ignore any URL printed above):\n'
+  printf 'https://github.com/%s/%s/actions/runs/%s\n' "$ORG" "$domain" "$run_id"
+  printf 'Use: devrc wait %s\n' "$domain"
 }
 
 wait_for_rc() {
