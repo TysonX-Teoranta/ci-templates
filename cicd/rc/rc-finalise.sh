@@ -90,7 +90,14 @@ run_hygiene() { # $1 = mode
 }
 
 # --- Version calc: vX.Y.Z-rc.N lineage ----------------------------------------
-LATEST="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*-rc.[0-9]*' | sort -V | tail -1)"
+# Lineage counts BURNED numbers too: devrc drop deletes the release tag but
+# leaves a dropped/<tag> marker, so a dropped number is never re-minted
+# (2026-08-08: two different artifacts both answered to v0.1.1-rc.17 because
+# the calc only saw live tags). Markers are stripped back to plain versions
+# before the sort so mixed lists order correctly.
+LATEST="$( { git tag -l 'v[0-9]*.[0-9]*.[0-9]*-rc.[0-9]*'; \
+             git tag -l 'dropped/v[0-9]*.[0-9]*.[0-9]*-rc.[0-9]*' | sed 's|^dropped/||'; } \
+           | sort -V | tail -1)"
 if [ -z "$LATEST" ]; then
   BASE="0.1.0"; N=1
 else

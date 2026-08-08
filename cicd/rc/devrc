@@ -139,8 +139,15 @@ drop() {
   printf 'This deletes prerelease and tag %s. Type the exact tag to confirm: ' "$candidate"
   read -r answer
   [ "$answer" = "$candidate" ] || die "confirmation did not match; nothing changed"
+  # Burn the number durably BEFORE the tag dies: a dropped/<tag> marker keeps
+  # the version in lineage so rc-finalise never re-mints it (2026-08-08: two
+  # different artifacts both called v0.1.1-rc.17 — never again).
+  sha=$(gh api "repos/$ORG/$domain/commits/$candidate" --jq .sha 2>/dev/null) \
+    || die "cannot resolve $candidate to a commit; nothing changed"
+  gh api "repos/$ORG/$domain/git/refs" -f ref="refs/tags/dropped/$candidate" -f sha="$sha" >/dev/null 2>&1 \
+    || printf 'note: burn marker dropped/%s already exists — number already burned.\n' "$candidate"
   gh release delete "$candidate" -R "$ORG/$domain" --cleanup-tag --yes
-  printf 'Dropped %s. The singleton candidate slot is now empty.\n' "$candidate"
+  printf 'Dropped %s. The number is burned (dropped/%s); the slot is now empty.\n' "$candidate" "$candidate"
 }
 
 command=${1:-help}; shift || true
