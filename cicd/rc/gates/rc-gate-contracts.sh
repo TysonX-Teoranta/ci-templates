@@ -66,14 +66,39 @@ done < <(python3 - "$TRX" "$DECL_LIST" <<'PYEOF'
 import sys
 import xml.etree.ElementTree as ET
 
+# vstest's trx logger records testName as the DISPLAY name (for NUnit that is
+# the bare method), and parks the class path in TestDefinitions/TestMethod
+# @className. Matching a declared Namespace.Class.Method therefore needs the
+# definitions joined back on: fqn = className + "." + methodName. Proven live
+# 2026-08-08 (run 31249821403: all five contracts false-MISSING on testName).
 trx = sys.argv[1]
 with open(sys.argv[2]) as f:
     declared = [l.strip() for l in f if l.strip()]
 root = ET.parse(trx).getroot()
-results = {}
+
+fqn_by_id = {}
+for d in root.iter():
+    if not d.tag.endswith("UnitTest"):
+        continue
+    exec_ids = [e.get("id", "") for e in d.iter() if e.tag.endswith("Execution")]
+    for m in d.iter():
+        if m.tag.endswith("TestMethod"):
+            fqn = m.get("className", "").split(",")[0] + "." + m.get("name", "")
+            for eid in exec_ids or [d.get("id", "")]:
+                fqn_by_id[eid] = fqn
+
+results = {}  # matchable name -> outcome (keeps worst outcome per name)
 for r in root.iter():
-    if r.tag.endswith("UnitTestResult"):
-        results[r.get("testName", "")] = r.get("outcome", "")
+    if not r.tag.endswith("UnitTestResult"):
+        continue
+    outcome = r.get("outcome", "")
+    names = {r.get("testName", "")}
+    eid = r.get("executionId", "") or r.get("testId", "")
+    if eid in fqn_by_id:
+        names.add(fqn_by_id[eid])
+    for n in names:
+        if n and (n not in results or results[n] == "Passed"):
+            results[n] = outcome
 
 for name in declared:
     hits = {k: v for k, v in results.items() if k == name or k.startswith(name + "(")}
